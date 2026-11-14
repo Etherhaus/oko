@@ -33,7 +33,7 @@ pub const HTTP_PORT: u16 = 80;
 /// plus a margin for the addresses a target can resolve to. The watchdog is a
 /// net for a hang, not a performance limit, so the number is deliberately
 /// generous — a probe added later must not make the net cut an honest run.
-const PROBES_PER_TARGET: u64 = 10;
+pub const PROBES_PER_TARGET: u64 = 10;
 /// The slack the watchdog adds on top of the sum.
 const WATCHDOG_SLACK: Duration = Duration::from_secs(30);
 

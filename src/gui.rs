@@ -16,10 +16,15 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use crate::config::{self, Config, RunSummary};
 use crate::i18n::{self, Lang, Strings};
+use crate::probes::dns::ResolveOutcome;
+use crate::probes::http::HttpOutcome;
+use crate::probes::payload::PayloadOutcome;
+use crate::probes::quic::QuicOutcome;
+use crate::probes::tls::TlsOutcome;
 use crate::report::{self, RunReport, TargetReport};
 use crate::run::{self, Options, Progress};
 use crate::target::{self, Category, Target};
@@ -30,13 +35,21 @@ slint::include_modules!();
 /// How often the UI thread drains the engine's channel.
 const TICK: Duration = Duration::from_millis(50);
 
-/// One target in the table, with everything the details panel needs.
+/// How long a toast stays on screen.
+const TOAST: Duration = Duration::from_secs(3);
+
+/// One target in the table, with everything the inspector needs.
 struct Row {
     target: Target,
     checked: bool,
     running: bool,
     report: Option<TargetReport>,
     tunnel: Option<TargetReport>,
+    /// When the run reached this target, so the table can say how long its
+    /// probes took.
+    started: Option<Instant>,
+    /// How long they took, in milliseconds.
+    ms: Option<u64>,
 }
 
 impl Row {
@@ -47,44 +60,190 @@ impl Row {
             running: false,
             report: None,
             tunnel: None,
+            started: None,
+            ms: None,
         }
     }
 
-    /// The row as the table shows it.
-    fn view(&self, index: usize, strings: &Strings) -> TargetRow {
+    /// The row as the list and the table show it.
+    fn view(&self, index: usize, strings: &Strings, pending: bool) -> TargetRow {
         let shown = self.report.as_ref().map(display);
+        let kind = shown.map(|(kind, _)| kind).unwrap_or("");
         TargetRow {
             index: index as i32,
             group: 0,
             header: false,
             domain: self.target.domain.clone().into(),
             checked: self.checked,
-            verdict: shown.map(|(kind, _)| kind).unwrap_or("").into(),
+            verdict: badge(kind, strings).into(),
             level: shown.map(|(_, level)| level_code(level)).unwrap_or(4),
-            level_text: shown.map(|(_, level)| strings.level(level)).unwrap_or_default().into(),
-            diff: self
-                .report
-                .as_ref()
-                .and_then(|report| report.diff.as_ref())
-                .map(|diff| diff.kind.as_str())
-                .unwrap_or("")
-                .into(),
-            running: self.running,
+            why: why(kind, strings).into(),
+            ms: self.ms.map(millis).unwrap_or_default().into(),
+            category: strings.category(self.target.category).into(),
+            pending,
             custom: self.target.custom,
             // Header-only fields: a target row leaves them empty.
             count: "".into(),
             collapsed: false,
         }
     }
+}
 
-    /// The details panel text: the direct report, the tunnel report and the
-    /// diff, in the same words the CLI prints.
-    fn detail(&self) -> String {
-        match &self.report {
-            Some(report) => report::render_target(report, self.tunnel.as_ref()),
-            None => String::new(),
-        }
+/// The badge word of a verdict: the four words the window uses, whatever the
+/// engine called the finding.
+fn badge(kind: &str, strings: &Strings) -> &'static str {
+    match kind {
+        "ok" | "both_ok" => strings.badge_ok,
+        "geo_block_by_service" | "service_block" => strings.badge_service,
+        "unknown" => strings.badge_unknown,
+        "" => strings.badge_none,
+        _ => strings.badge_provider,
     }
+}
+
+/// The short reason of a verdict, for the table's second column.
+fn why(kind: &str, strings: &Strings) -> &'static str {
+    match kind {
+        "ok" => strings.why_ok,
+        "dns_spoof" => strings.why_dns_spoof,
+        "dpi_sni" => strings.why_dpi_sni,
+        "ip_block" => strings.why_ip_block,
+        "host_filter" => strings.why_host_filter,
+        "l4_drop" => strings.why_l4_drop,
+        "geo_block_by_service" => strings.why_geo_block,
+        "path_block" => strings.why_path_block,
+        "both_ok" => strings.why_both_ok,
+        "service_block" => strings.why_service_block,
+        "unknown" => strings.why_unknown,
+        _ => strings.why_not_probed,
+    }
+}
+
+/// A duration as the table shows it: seconds with one decimal above a second.
+fn millis(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms} ms")
+    }
+}
+
+/// One card of the inspector.
+fn step(name: &str, result: &str, note: &str, tone: i32) -> Step {
+    Step {
+        name: name.into(),
+        result: result.into(),
+        note: note.into(),
+        tone,
+    }
+}
+
+/// The inspector's cards: one per probe, in the order the run makes them.
+///
+/// The tone is the reading, not the verdict: a silent QUIC probe is "not
+/// applicable", because UDP silence is a legitimate NAT as often as a filter.
+fn steps_for(row: &Row, strings: &Strings) -> Vec<Step> {
+    let Some(report) = &row.report else {
+        // A target that has not been probed still shows the shape of the run:
+        // seven steps, each saying what it will look at.
+        return [
+            (strings.step_dns, strings.note_pending_dns),
+            (strings.step_tcp, strings.note_pending_tcp),
+            (strings.step_tls, strings.note_pending_tls),
+            (strings.step_http, strings.note_pending_http),
+            (strings.step_payload, strings.note_pending_payload),
+            (strings.step_quic, strings.note_pending_quic),
+            (strings.step_tunnel, strings.note_pending_tunnel),
+        ]
+        .into_iter()
+        .map(|(name, note)| step(name, strings.badge_none, note, 4))
+        .collect();
+    };
+    let mut steps = Vec::new();
+
+    // DNS: the system resolver against the DoH references.
+    let system_ok = matches!(report.dns.system, ResolveOutcome::Resolved { .. });
+    let doh_ok = report
+        .dns
+        .doh
+        .iter()
+        .any(|answer| matches!(answer.outcome, ResolveOutcome::Resolved { .. }));
+    let (tone, result, note) = match (system_ok, doh_ok) {
+        (true, true) => (0, strings.res_ok, strings.note_dns_ok),
+        (false, true) => (1, strings.res_fail, strings.note_dns_spoof),
+        _ => (3, strings.res_na, strings.note_dns_ref),
+    };
+    steps.push(step(strings.step_dns, result, note, tone));
+
+    // TCP: one connect is enough to say the address answers.
+    let connected = report.tcp.iter().filter(|probe| probe.outcome.is_connected()).count();
+    let (tone, result, note) = if connected > 0 {
+        (0, strings.res_ok, strings.note_tcp_ok)
+    } else if report.tcp.is_empty() {
+        (3, strings.res_na, strings.note_tcp_fail)
+    } else {
+        (1, strings.res_fail, strings.note_tcp_fail)
+    };
+    steps.push(step(strings.step_tcp, result, note, tone));
+
+    // TLS: the server's answer, not the certificate.
+    let (tone, result, note) = match report.tls.as_ref().map(|tls| &tls.real.outcome) {
+        Some(TlsOutcome::Ok { .. }) => (0, strings.res_ok, strings.note_tls_ok),
+        Some(TlsOutcome::ServerResponded {
+            cert_mismatch: true, ..
+        }) => (2, strings.res_answered, strings.note_tls_mismatch),
+        Some(TlsOutcome::ServerResponded { .. }) => (2, strings.res_answered, strings.note_tls_ok),
+        Some(TlsOutcome::RstAfterClientHello { .. }) => (1, strings.res_reset, strings.note_tls_rst),
+        Some(TlsOutcome::Timeout { .. }) => (1, strings.res_timeout, strings.note_tls_rst),
+        Some(TlsOutcome::TlsAlert { .. }) => (2, strings.res_answered, strings.note_tls_alert),
+        Some(TlsOutcome::Failed { .. }) | None => (3, strings.res_na, strings.note_tls_alert),
+    };
+    steps.push(step(strings.step_tls, result, note, tone));
+
+    // HTTP: a status line means the Host header got through.
+    let (tone, result, note) = match report.http.as_ref().map(|http| &http.real.outcome) {
+        Some(HttpOutcome::Response { status, .. }) if *status < 300 => (0, strings.res_ok, strings.note_http_ok),
+        Some(HttpOutcome::Response { status, .. }) if *status < 400 => (0, strings.res_redirect, strings.note_http_ok),
+        Some(HttpOutcome::Response { .. }) => (2, strings.res_fail, strings.note_http_status),
+        Some(HttpOutcome::Reset { .. }) => (1, strings.res_reset, strings.note_http_reset),
+        Some(HttpOutcome::Timeout { .. }) => (1, strings.res_timeout, strings.note_http_reset),
+        Some(HttpOutcome::Failed { .. }) | None => (3, strings.res_na, strings.note_http_reset),
+    };
+    steps.push(step(strings.step_http, result, note, tone));
+
+    // The payload: how much of the body the path carried.
+    let (tone, result, note) = match report.payload.as_ref().map(|payload| &payload.outcome) {
+        Some(PayloadOutcome::Complete { .. }) | Some(PayloadOutcome::Ended { .. }) => {
+            (0, strings.res_full, strings.note_payload_full)
+        }
+        Some(PayloadOutcome::KbDrop { .. }) => (1, strings.res_drop, strings.note_payload_drop),
+        Some(PayloadOutcome::Truncated { .. }) | Some(PayloadOutcome::Stalled { .. }) => {
+            (2, strings.res_stalled, strings.note_payload_drop)
+        }
+        Some(PayloadOutcome::NotAttempted { .. }) | Some(PayloadOutcome::Failed { .. }) | None => {
+            (3, strings.res_na, strings.note_payload_na)
+        }
+    };
+    steps.push(step(strings.step_payload, result, note, tone));
+
+    // QUIC: an answer proves the UDP path; silence proves nothing.
+    let (tone, result, note) = match report.quic.as_ref().map(|quic| &quic.outcome) {
+        Some(QuicOutcome::Answered { .. }) => (0, strings.res_answered, strings.note_quic_answer),
+        Some(QuicOutcome::Silent { .. }) => (3, strings.res_silent, strings.note_quic_silent),
+        Some(QuicOutcome::Failed { .. }) | None => (3, strings.res_na, strings.note_quic_silent),
+    };
+    steps.push(step(strings.step_quic, result, note, tone));
+
+    // The tunnel: what the comparison says about the path.
+    let (tone, result, note) = match report.diff.as_ref().map(|diff| diff.kind) {
+        Some(DiffKind::BothOk) => (0, strings.res_ok, strings.note_tunnel_ok),
+        Some(DiffKind::PathBlock) => (1, strings.res_fail, strings.note_tunnel_path),
+        Some(DiffKind::ServiceBlock) => (1, strings.res_fail, strings.note_tunnel_service),
+        Some(DiffKind::Unknown) | None => (3, strings.res_na, strings.note_tunnel_off),
+    };
+    steps.push(step(strings.step_tunnel, result, note, tone));
+
+    steps
 }
 
 /// The verdict the table shows: the tunnel comparison when one ran, the direct
@@ -116,39 +275,68 @@ fn level_code(level: Level) -> i32 {
     }
 }
 
-/// What the status line says.
+/// What the run header says. Everything that is not about the run itself — a
+/// bad domain, a written export — goes to the toast instead.
 enum Status {
     Ready,
     Checking { done: usize, total: usize },
-    Done { total: usize },
+    Done,
     ControlDead,
     Interrupted(String),
     Failed(String),
-    Message(Message),
-}
-
-/// A status line that is not about the run.
-enum Message {
-    NothingSelected,
-    BadSocks5,
-    BadDomain,
-    DuplicateDomain,
 }
 
 impl Status {
-    fn text(&self, strings: &Strings) -> String {
+    /// The state, in one short line.
+    fn state(&self, strings: &Strings) -> String {
         match self {
             Status::Ready => strings.ready.to_string(),
-            Status::Checking { done, total } => format!("{} {done}/{total}", strings.checking),
-            Status::Done { total } => format!("{}: {total}", strings.done),
-            Status::ControlDead => strings.control_dead.to_string(),
-            Status::Interrupted(target) => format!("{}: {target}", strings.interrupted),
-            Status::Failed(reason) => format!("{}: {reason}", strings.run_failed),
-            Status::Message(Message::NothingSelected) => strings.nothing_selected.to_string(),
-            Status::Message(Message::BadSocks5) => strings.bad_socks5.to_string(),
-            Status::Message(Message::BadDomain) => strings.bad_domain.to_string(),
-            Status::Message(Message::DuplicateDomain) => strings.duplicate_domain.to_string(),
+            // The counter lives on the button; the header only says what is going on.
+            Status::Checking { .. } => strings.checking.to_string(),
+            Status::Done => strings.done.to_string(),
+            Status::ControlDead => strings.control_dead_short.to_string(),
+            Status::Interrupted(_) => strings.interrupted.to_string(),
+            Status::Failed(_) => strings.run_failed.to_string(),
         }
+    }
+
+    /// The line under the state: when the run happened, how long it took, and
+    /// what it covered. A failure says what failed instead.
+    fn detail(&self, app: &App, strings: &Strings) -> String {
+        match self {
+            Status::ControlDead => strings.control_dead.to_string(),
+            Status::Interrupted(target) => target.clone(),
+            Status::Failed(reason) => reason.clone(),
+            _ => match app.config.last() {
+                Some(last) => run_line(&last.at, last.seconds, last.ok + last.blocked + last.unknown, strings),
+                None => String::new(),
+            },
+        }
+    }
+}
+
+/// `2026-11-14 21:42 · 3 min 12 s · 24 targets`.
+fn run_line(at: &str, seconds: u64, count: usize, strings: &Strings) -> String {
+    format!(
+        "{} · {} · {count} {}",
+        stamp(at),
+        human_seconds(seconds, strings),
+        strings.targets
+    )
+}
+
+/// A duration in words: seconds under a minute, minutes and seconds above.
+fn human_seconds(seconds: u64, strings: &Strings) -> String {
+    if seconds < 60 {
+        format!("{seconds} {}", strings.seconds)
+    } else {
+        format!(
+            "{} {} {} {}",
+            seconds / 60,
+            strings.minutes,
+            seconds % 60,
+            strings.seconds
+        )
     }
 }
 
@@ -166,9 +354,13 @@ struct App {
     /// One flag per group of `Category::GROUPS`: a collapsed group shows its
     /// header and hides its targets.
     collapsed: Vec<bool>,
-    /// The settings dialog and the header menu are overlays, not screens.
+    /// The settings popover is an overlay, not a screen.
     settings_open: bool,
-    menu_open: bool,
+    /// The table's order: the worst verdicts first, so the walls are on top.
+    /// It is fixed while a run goes on and sorted when one ends.
+    order: Vec<usize>,
+    /// A short message at the bottom of the window, and when it goes away.
+    toast: Option<(String, Instant)>,
     running: bool,
     /// The id of the run the window is waiting for. Events of any other run
     /// are stale and dropped.
@@ -179,7 +371,6 @@ struct App {
     running_rows: Vec<usize>,
     started: Option<Instant>,
     report: Option<RunReport>,
-    export_status: String,
     status: Status,
     progress: f32,
     control_dead: bool,
@@ -212,6 +403,7 @@ impl App {
             "ru" => Lang::Ru,
             _ => Lang::En,
         };
+        let order = (0..rows.len()).collect();
         App {
             rows,
             selected: None,
@@ -224,13 +416,13 @@ impl App {
             add_text: String::new(),
             collapsed: vec![false; Category::GROUPS.len()],
             settings_open: false,
-            menu_open: false,
+            order,
+            toast: None,
             running: false,
             run_id: 0,
             running_rows: Vec::new(),
             started: None,
             report: None,
-            export_status: String::new(),
             status: Status::Ready,
             progress: 0.0,
             control_dead: false,
@@ -359,9 +551,6 @@ pub fn run() -> ExitCode {
     if std::env::var("OKO_SETTINGS").is_ok() {
         ui.invoke_open_settings();
     }
-    if std::env::var("OKO_MENU").is_ok() {
-        ui.invoke_toggle_menu();
-    }
     if let Ok(group) = std::env::var("OKO_COLLAPSE").unwrap_or_default().parse::<i32>() {
         ui.invoke_toggle_collapse(group);
     }
@@ -377,9 +566,18 @@ pub fn run() -> ExitCode {
                 let finished = matches!(event, Event::Finished(..));
                 handle(&ui, &mut app.borrow_mut(), event);
                 if finished && std::env::var_os("OKO_EXPORT_DIR").is_some() {
-                    ui.invoke_export_text();
-                    ui.invoke_export_json();
+                    ui.invoke_export();
                 }
+            }
+            // A toast goes away on its own; the timer is the only clock here.
+            let expired = app
+                .borrow()
+                .toast
+                .as_ref()
+                .is_some_and(|(_, until)| Instant::now() >= *until);
+            if expired {
+                app.borrow_mut().toast = None;
+                toast(&ui, &app.borrow());
             }
         }
     });
@@ -402,56 +600,50 @@ pub fn run() -> ExitCode {
     }
 }
 
+/// Update a model in place: replacing it would rebuild every row of the list,
+/// and the list would lose its scroll position on each verdict of a run.
+macro_rules! set_rows {
+    ($ui:expr, $get:ident, $set:ident, $rows:expr) => {{
+        let rows = $rows;
+        let model = $ui.$get();
+        match model.as_any().downcast_ref::<VecModel<TargetRow>>() {
+            Some(vec) if vec.row_count() == rows.len() => {
+                for (index, row) in rows.into_iter().enumerate() {
+                    vec.set_row_data(index, row);
+                }
+            }
+            _ => $ui.$set(ModelRc::new(VecModel::from(rows))),
+        }
+    }};
+}
+
 /// Push the whole state into the window.
 fn refresh(ui: &AppWindow, app: &App) {
     let strings = app.strings();
-    let rows = rows_model(app, &strings);
-    // The rows are updated in place: replacing the model would rebuild every
-    // row of the list, and the list would lose its scroll position on each
-    // verdict of a run.
-    let model = ui.get_rows();
-    match model.as_any().downcast_ref::<VecModel<TargetRow>>() {
-        Some(vec) if vec.row_count() == rows.len() => {
-            for (index, row) in rows.into_iter().enumerate() {
-                vec.set_row_data(index, row);
-            }
-        }
-        _ => ui.set_rows(ModelRc::new(VecModel::from(rows))),
-    }
+    set_rows!(ui, get_list, set_list, list_model(app, &strings));
+    set_rows!(ui, get_rows, set_rows, table_model(app, &strings));
     ui.set_selected(app.selected.map(|index| index as i32).unwrap_or(-1));
-    ui.set_detail(
-        app.selected
-            .and_then(|index| app.rows.get(index))
-            .map(Row::detail)
-            .unwrap_or_default()
-            .into(),
-    );
+    inspector(ui, app, &strings);
     ui.set_running(app.running);
     ui.set_progress(app.progress);
-    ui.set_status(app.status.text(&strings).into());
+    ui.set_run_state(app.status.state(&strings).into());
+    ui.set_run_sub(app.status.detail(app, &strings).into());
+    ui.set_run_label(run_label(app, &strings).into());
     ui.set_adding(app.adding);
     ui.set_add_text(app.add_text.clone().into());
     ui.set_frame(app.frame);
     ui.set_settings_open(app.settings_open);
-    ui.set_menu_open(app.menu_open);
     ui.set_export_enabled(app.report.is_some());
-    ui.set_export_status(app.export_status.clone().into());
-    ui.set_targets_count(app.rows.len().to_string().into());
-    ui.set_checked_count(app.rows.iter().filter(|row| row.checked).count().to_string().into());
-    let selected = app.selected.and_then(|index| app.rows.get(index));
-    ui.set_detail_title(selected.map(|row| row.target.label()).unwrap_or_default().into());
-    ui.set_detail_mark(
-        selected
-            .filter(|row| row.target.custom)
-            .map(|_| strings.custom_mark.to_string())
-            .unwrap_or_default()
-            .into(),
-    );
+    ui.set_lang(app.lang.code().into());
+    ui.set_timeout_value(app.timeout as i32);
+    ui.set_socks5_text(app.socks5.clone().into());
     dashboard(ui, app, &strings);
+    status_bar(ui, app);
+    toast(ui, app);
 }
 
-/// The table's model: a header per category, then the targets of that group.
-fn rows_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
+/// The targets panel: a header per category, then the targets of that group.
+fn list_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
     let mut out = Vec::new();
     for (group, category) in Category::GROUPS.iter().enumerate() {
         let indices: Vec<usize> = app
@@ -475,9 +667,10 @@ fn rows_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
             checked,
             verdict: "".into(),
             level: 4,
-            level_text: "".into(),
-            diff: "".into(),
-            running: false,
+            why: "".into(),
+            ms: "".into(),
+            category: "".into(),
+            pending: false,
             custom: false,
             count: format!("{ticked}/{}", indices.len()).into(),
             collapsed,
@@ -486,44 +679,141 @@ fn rows_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
             continue;
         }
         for index in indices {
-            out.push(app.rows[index].view(index, strings));
+            out.push(app.rows[index].view(index, strings, false));
         }
     }
     out
 }
 
-/// The dashboard: the counters of the last run and the delta to the one before.
+/// The table: the ticked targets in the order the last run left them, worst
+/// first. A target the run has not reached yet is dimmed.
+fn table_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
+    app.order
+        .iter()
+        .filter_map(|index| app.rows.get(*index).map(|row| (*index, row)))
+        .filter(|(_, row)| row.checked)
+        .map(|(index, row)| row.view(index, strings, app.running && row.report.is_none()))
+        .collect()
+}
+
+/// Put the worst verdicts on top: the table answers "where are the walls".
+fn sort_order(app: &mut App) {
+    let mut order = app.order.clone();
+    order.sort_by_key(|index| {
+        let rank = match app.rows.get(*index).and_then(|row| row.report.as_ref()).map(display) {
+            Some((_, Level::Bad)) => 0,
+            Some((_, Level::Warn)) => 1,
+            Some((_, Level::Undetermined)) => 2,
+            Some((_, Level::Ok)) => 3,
+            None => 4,
+        };
+        (rank, *index)
+    });
+    app.order = order;
+}
+
+/// The button's label: the run's progress while it goes on.
+fn run_label(app: &App, strings: &Strings) -> String {
+    match &app.status {
+        Status::Checking { done, total } if app.running => {
+            format!("{} {done}/{total}", strings.checking)
+        }
+        _ => strings.check.to_string(),
+    }
+}
+
+/// The dashboard: the counters of the last run, the delta to the one before,
+/// and the wall they add up to.
 fn dashboard(ui: &AppWindow, app: &App, strings: &Strings) {
     let Some(last) = app.config.last() else {
-        ui.set_dash_empty(true);
         ui.set_dash_ok("0".into());
         ui.set_dash_blocked("0".into());
         ui.set_dash_unknown("0".into());
         ui.set_dash_ok_delta("".into());
         ui.set_dash_blocked_delta("".into());
         ui.set_dash_unknown_delta("".into());
-        ui.set_dash_info("".into());
-        ui.set_dash_delta("".into());
+        ui.set_dash_ok_count(0);
+        ui.set_dash_blocked_count(0);
+        ui.set_dash_unknown_count(0);
         return;
     };
-    ui.set_dash_empty(false);
     ui.set_dash_ok(last.ok.to_string().into());
     ui.set_dash_blocked(last.blocked.to_string().into());
     ui.set_dash_unknown(last.unknown.to_string().into());
-    ui.set_dash_info(format!("{} · {} {}", stamp(&last.at), last.seconds, strings.seconds).into());
+    ui.set_dash_ok_count(last.ok as i32);
+    ui.set_dash_blocked_count(last.blocked as i32);
+    ui.set_dash_unknown_count(last.unknown as i32);
     match app.config.previous() {
         Some(previous) => {
             ui.set_dash_ok_delta(signed(last.ok, previous.ok).into());
             ui.set_dash_blocked_delta(signed(last.blocked, previous.blocked).into());
             ui.set_dash_unknown_delta(signed(last.unknown, previous.unknown).into());
-            ui.set_dash_delta(strings.dash_delta.into());
         }
         None => {
             ui.set_dash_ok_delta("".into());
             ui.set_dash_blocked_delta("".into());
             ui.set_dash_unknown_delta("".into());
-            ui.set_dash_delta("".into());
         }
+    }
+    let _ = strings;
+}
+
+/// The status bar: what the run was given, in the words of a boot log.
+fn status_bar(ui: &AppWindow, app: &App) {
+    let proxy = app.socks5.trim();
+    let tunnel = if proxy.is_empty() {
+        "—".to_string()
+    } else if app.report.as_ref().and_then(|report| report.tunnel.as_ref()).is_some() {
+        format!("{proxy} ok")
+    } else {
+        proxy.to_string()
+    };
+    ui.set_sb_tunnel(format!("tunnel {tunnel}").into());
+    ui.set_sb_timeout(format!("timeout {}s", app.timeout).into());
+    ui.set_sb_probes(format!("probes {}/target", run::PROBES_PER_TARGET).into());
+    ui.set_sb_run(
+        match app.config.last() {
+            Some(last) => format!("run {}s", last.seconds),
+            None => "run —".to_string(),
+        }
+        .into(),
+    );
+    ui.set_sb_version(format!("oko {} · etherhaus", env!("CARGO_PKG_VERSION")).into());
+}
+
+/// The inspector of the chosen row: its probes, and the facts behind them.
+fn inspector(ui: &AppWindow, app: &App, strings: &Strings) {
+    let Some(row) = app.selected.and_then(|index| app.rows.get(index)) else {
+        ui.set_steps(ModelRc::new(VecModel::from(Vec::<Step>::new())));
+        ui.set_facts(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
+        ui.set_detail_title("".into());
+        ui.set_detail_badge("".into());
+        ui.set_detail_level(4);
+        return;
+    };
+    let steps = steps_for(row, strings);
+    let facts: Vec<SharedString> = row
+        .report
+        .as_ref()
+        .map(|report| report.verdict.facts.iter().map(|fact| fact.as_str().into()).collect())
+        .unwrap_or_default();
+    let shown = row.report.as_ref().map(display);
+    let kind = shown.map(|(kind, _)| kind).unwrap_or("");
+    ui.set_steps(ModelRc::new(VecModel::from(steps)));
+    ui.set_facts(ModelRc::new(VecModel::from(facts)));
+    ui.set_detail_title(row.target.label().into());
+    ui.set_detail_badge(format!("{} — {}", badge(kind, strings), why(kind, strings)).into());
+    ui.set_detail_level(shown.map(|(_, level)| level_code(level)).unwrap_or(4));
+}
+
+/// The toast: a short message that goes away on its own.
+fn toast(ui: &AppWindow, app: &App) {
+    match &app.toast {
+        Some((text, _)) => {
+            ui.set_toast_text(text.clone().into());
+            ui.set_toast_visible(true);
+        }
+        None => ui.set_toast_visible(false),
     }
 }
 
@@ -538,7 +828,7 @@ fn stamp(at: &str) -> String {
 fn signed(now: usize, before: usize) -> String {
     let delta = now as i64 - before as i64;
     match delta {
-        0 => "0".to_string(),
+        0 => "·".to_string(),
         delta if delta > 0 => format!("+{delta}"),
         delta => format!("{delta}"),
     }
@@ -574,11 +864,13 @@ fn apply_progress(app: &mut App, progress: Progress) {
         Progress::Started { index } => {
             if let Some(row) = row_for(app, index) {
                 row.running = true;
+                row.started = Some(Instant::now());
             }
         }
         Progress::Target { index, report } => {
             if let Some(row) = row_for(app, index) {
                 row.running = false;
+                row.ms = row.started.map(|started| started.elapsed().as_millis() as u64);
                 row.report = Some(report);
             }
             let total = app.running_rows.len();
@@ -599,6 +891,8 @@ fn apply_progress(app: &mut App, progress: Progress) {
                     report.verdict = verdict;
                     report.diff = Some(diff);
                 }
+                // The tunnel run is part of the target's time.
+                row.ms = row.started.map(|started| started.elapsed().as_millis() as u64);
             }
         }
     }
@@ -618,11 +912,10 @@ fn finish(app: &mut App, report: RunReport) {
     app.status = match &report.interrupted {
         Some(interrupted) => Status::Interrupted(interrupted.target.clone()),
         None if app.control_dead => Status::ControlDead,
-        None => Status::Done {
-            total: report.targets.len(),
-        },
+        None => Status::Done,
     };
     app.report = Some(report);
+    sort_order(app);
 }
 
 /// The counters of one run, as the dashboard and the history keep them.
@@ -658,14 +951,14 @@ fn start(ui: &AppWindow, app: &mut App) {
         }
     }
     if targets.is_empty() {
-        app.status = Status::Message(Message::NothingSelected);
+        app.toast = Some((app.strings().nothing_selected.to_string(), Instant::now() + TOAST));
         refresh(ui, app);
         return;
     }
     let socks5 = match parse_socks5(&app.socks5) {
         Ok(proxy) => proxy,
         Err(()) => {
-            app.status = Status::Message(Message::BadSocks5);
+            app.toast = Some((app.strings().bad_socks5.to_string(), Instant::now() + TOAST));
             refresh(ui, app);
             return;
         }
@@ -675,9 +968,10 @@ fn start(ui: &AppWindow, app: &mut App) {
         row.report = None;
         row.tunnel = None;
         row.running = false;
+        row.started = None;
+        row.ms = None;
     }
     app.report = None;
-    app.export_status.clear();
     app.control_dead = false;
     app.running_rows = running_rows;
     app.running = true;
@@ -742,20 +1036,21 @@ fn validate_domain(text: &str) -> Option<String> {
 /// Add the domain in the field, or say why it cannot be added.
 fn add_domain(ui: &AppWindow, app: &mut App) {
     let Some(domain) = validate_domain(&app.add_text) else {
-        app.status = Status::Message(Message::BadDomain);
+        app.toast = Some((app.strings().bad_domain.to_string(), Instant::now() + TOAST));
         refresh(ui, app);
         return;
     };
     if app.rows.iter().any(|row| row.target.domain == domain) {
-        app.status = Status::Message(Message::DuplicateDomain);
+        app.toast = Some((app.strings().duplicate_domain.to_string(), Instant::now() + TOAST));
         refresh(ui, app);
         return;
     }
     app.rows.push(Row::new(target::ad_hoc(&domain), true));
+    app.order.push(app.rows.len() - 1);
     app.selected = Some(app.rows.len() - 1);
     app.add_text.clear();
     app.adding = false;
-    app.status = Status::Ready;
+    app.toast = Some((format!("{}: {domain}", app.strings().added), Instant::now() + TOAST));
     app.persist();
     refresh(ui, app);
 }
@@ -765,38 +1060,15 @@ fn clamp_timeout(value: u64) -> u64 {
     value.clamp(config::MIN_TIMEOUT, config::MAX_TIMEOUT)
 }
 
-/// What an export writes.
-#[derive(Clone, Copy)]
-enum Export {
-    Text,
-    Json,
-}
-
-impl Export {
-    fn extension(self) -> &'static str {
-        match self {
-            Export::Text => "txt",
-            Export::Json => "json",
-        }
-    }
-}
-
-/// The contents of an export, or the reason it cannot be made.
-fn export_contents(report: &RunReport, kind: Export) -> Result<String, String> {
-    match kind {
-        Export::Text => Ok(report::render(report)),
-        Export::Json => report::render_json(report).map_err(|err| err.to_string()),
-    }
-}
-
 /// The default file name: the moment of the run, so two exports never collide.
-fn export_name(report: &RunReport, kind: Export) -> String {
+/// The text report is written next to the JSON one, under the same stem.
+fn export_name(report: &RunReport) -> String {
     let stamp: String = report
         .generated_at
         .chars()
         .map(|c| if c == ':' { '-' } else { c })
         .collect();
-    format!("oko-{stamp}.{}", kind.extension())
+    format!("oko-{stamp}.json")
 }
 
 /// Wire the window's callbacks to the state.
@@ -866,7 +1138,6 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
             let Some(window) = ui.upgrade() else { return };
             let mut state = app.borrow_mut();
             state.settings_open = true;
-            state.menu_open = false;
             refresh(&window, &state);
         }
     });
@@ -878,28 +1149,6 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
             let Some(window) = ui.upgrade() else { return };
             let mut state = app.borrow_mut();
             state.settings_open = false;
-            refresh(&window, &state);
-        }
-    });
-
-    ui.on_toggle_menu({
-        let ui = ui.as_weak();
-        let app = app.clone();
-        move || {
-            let Some(window) = ui.upgrade() else { return };
-            let mut state = app.borrow_mut();
-            state.menu_open = !state.menu_open;
-            refresh(&window, &state);
-        }
-    });
-
-    ui.on_close_menu({
-        let ui = ui.as_weak();
-        let app = app.clone();
-        move || {
-            let Some(window) = ui.upgrade() else { return };
-            let mut state = app.borrow_mut();
-            state.menu_open = false;
             refresh(&window, &state);
         }
     });
@@ -970,7 +1219,6 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
             let mut state = app.borrow_mut();
             state.adding = true;
             state.add_text.clear();
-            state.menu_open = false;
             refresh(&window, &state);
         }
     });
@@ -1050,21 +1298,12 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
         }
     });
 
-    ui.on_export_text({
+    ui.on_export({
         let ui = ui.as_weak();
         let app = app.clone();
         move || {
             let Some(window) = ui.upgrade() else { return };
-            export(&window, &mut app.borrow_mut(), Export::Text);
-        }
-    });
-
-    ui.on_export_json({
-        let ui = ui.as_weak();
-        let app = app.clone();
-        move || {
-            let Some(window) = ui.upgrade() else { return };
-            export(&window, &mut app.borrow_mut(), Export::Json);
+            export(&window, &mut app.borrow_mut());
         }
     });
 
@@ -1133,37 +1372,42 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
     });
 }
 
-/// Write one export: the dialog picks the place, the report is the contents.
-fn export(ui: &AppWindow, app: &mut App, kind: Export) {
+/// Write the report: the dialog picks the place of the JSON, the text report
+/// lands next to it under the same stem. One button, one dialog, two files.
+fn export(ui: &AppWindow, app: &mut App) {
+    let strings = app.strings();
     let Some(report) = &app.report else {
-        app.export_status = app.strings().export_empty.to_string();
-        ui.set_export_status(app.export_status.clone().into());
+        app.toast = Some((strings.export_empty.to_string(), Instant::now() + TOAST));
+        refresh(ui, app);
         return;
     };
-    let contents = match export_contents(report, kind) {
-        Ok(contents) => contents,
-        Err(reason) => {
-            app.export_status = format!("{}: {reason}", app.strings().export_failed);
-            ui.set_export_status(app.export_status.clone().into());
+    let json = match report::render_json(report) {
+        Ok(json) => json,
+        Err(err) => {
+            app.toast = Some((format!("{}: {err}", strings.export_failed), Instant::now() + TOAST));
+            refresh(ui, app);
             return;
         }
     };
-    let name = export_name(report, kind);
+    let text = report::render(report);
+    let name = export_name(report);
     let path = match std::env::var_os("OKO_EXPORT_DIR") {
         Some(dir) => Some(std::path::PathBuf::from(dir).join(name)),
         None => rfd::FileDialog::new()
             .set_file_name(&name)
-            .set_title(app.strings().export_title)
+            .set_title(strings.export_title)
             .save_file(),
     };
     let Some(path) = path else {
         return;
     };
-    app.export_status = match std::fs::write(&path, contents) {
-        Ok(()) => format!("{}: {}", app.strings().export_done, path.display()),
-        Err(err) => format!("{}: {err}", app.strings().export_failed),
+    let text_path = path.with_extension("txt");
+    let message = match std::fs::write(&path, json).and_then(|()| std::fs::write(&text_path, text)) {
+        Ok(()) => format!("{}: {}", strings.export_done, path.display()),
+        Err(err) => format!("{}: {err}", strings.export_failed),
     };
-    ui.set_export_status(app.export_status.clone().into());
+    app.toast = Some((message, Instant::now() + TOAST));
+    refresh(ui, app);
 }
 
 #[cfg(test)]
@@ -1326,7 +1570,7 @@ mod tests {
     fn the_dashboard_delta_is_signed_and_silent_at_zero() {
         assert_eq!(signed(3, 2), "+1");
         assert_eq!(signed(2, 3), "-1");
-        assert_eq!(signed(2, 2), "0");
+        assert_eq!(signed(2, 2), "·");
     }
 
     #[test]
@@ -1335,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn the_export_name_carries_the_moment_and_the_extension() {
+    fn the_export_name_carries_the_moment_of_the_run() {
         let run = RunReport {
             tool: "oko",
             version: "test",
@@ -1348,8 +1592,7 @@ mod tests {
             tunnel: None,
             interrupted: None,
         };
-        assert_eq!(export_name(&run, Export::Text), "oko-2026-11-14T17-24-45Z.txt");
-        assert_eq!(export_name(&run, Export::Json), "oko-2026-11-14T17-24-45Z.json");
+        assert_eq!(export_name(&run), "oko-2026-11-14T17-24-45Z.json");
     }
 
     #[test]
@@ -1364,7 +1607,7 @@ mod tests {
         let (events, _incoming) = mpsc::channel();
         let app = App::new(Config::default(), events);
         let strings = Strings::new(Lang::En);
-        let rows = rows_model(&app, &strings);
+        let rows = list_model(&app, &strings);
         let headers: Vec<&str> = rows
             .iter()
             .filter(|row| row.header)
@@ -1390,7 +1633,7 @@ mod tests {
         };
         let app = App::new(config, events);
         let strings = Strings::new(Lang::Ru);
-        let rows = rows_model(&app, &strings);
+        let rows = list_model(&app, &strings);
         let custom = rows
             .iter()
             .find(|row| row.header && row.domain == "Пользовательские")

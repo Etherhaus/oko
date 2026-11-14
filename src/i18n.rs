@@ -13,7 +13,6 @@ use slint::{ComponentHandle, Global};
 
 use crate::gui::Labels;
 use crate::target::Category;
-use crate::verdict::Level;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Lang {
@@ -79,16 +78,6 @@ macro_rules! labels {
 }
 
 impl Strings {
-    /// The word for a verdict level, for the table's subtitle.
-    pub fn level(&self, level: Level) -> &'static str {
-        match level {
-            Level::Ok => self.level_ok,
-            Level::Warn => self.level_warn,
-            Level::Bad => self.level_bad,
-            Level::Undetermined => self.level_undetermined,
-        }
-    }
-
     /// The heading of a group in the target list.
     pub fn category(&self, category: Category) -> &'static str {
         match category {
@@ -110,38 +99,177 @@ impl Strings {
 }
 
 labels! {
-    // Header
-    subtitle, set_subtitle => (
-        "a detector for blocking and reachability of online services",
-        "детектор блокировок и доступности сервисов"
+    // The run header.
+    ready, set_ready => ("Ready to check", "Готов к проверке"),
+    checking, set_checking => ("Checking", "Проверка"),
+    done, set_done => ("Run complete", "Прогон завершён"),
+    check, set_check => ("Check", "Проверить"),
+    control_dead, set_control_dead => (
+        "The control target did not answer: the network is down or filtered as a whole",
+        "Контрольная цель не ответила: сеть недоступна или фильтруется целиком"
     ),
+    control_dead_short, set_control_dead_short => ("control is silent", "контроль молчит"),
+    interrupted, set_interrupted => (
+        "The run was interrupted by the watchdog",
+        "Прогон прерван сторожевым таймером"
+    ),
+    run_failed, set_run_failed => ("The run failed", "Прогон не удался"),
+    nothing_selected, set_nothing_selected => ("No target is ticked", "Не отмечено ни одной цели"),
+    bad_socks5, set_bad_socks5 => ("The SOCKS5 address is not valid", "Адрес SOCKS5 не разобран"),
 
-    // Table
+    // The targets panel.
     targets, set_targets => ("Targets", "Цели"),
-    col_target, set_col_target => ("Target", "Цель"),
-    col_verdict, set_col_verdict => ("Verdict", "Вердикт"),
     check_all, set_check_all => ("All", "Все"),
     check_none, set_check_none => ("None", "Ничего"),
-    not_checked, set_not_checked => ("not checked", "не проверено"),
-    in_progress, set_in_progress => ("checking…", "идёт проверка…"),
-    level_ok, set_level_ok => ("ok", "ок"),
-    level_warn, set_level_warn => ("warn", "варн"),
-    level_bad, set_level_bad => ("blocked", "блокировка"),
-    level_undetermined, set_level_undetermined => ("undetermined", "неопределённо"),
-
-    // Details
-    details, set_details => ("Details", "Детали"),
-    details_empty, set_details_empty => (
-        "Select a target to see every probe and its outcome.",
-        "Выберите цель, чтобы увидеть все пробы и их исходы."
+    add_target, set_add_target => ("Add a target", "Добавить цель"),
+    add, set_add => ("Add", "Добавить"),
+    cancel, set_cancel => ("Cancel", "Отмена"),
+    domain_placeholder, set_domain_placeholder => ("example.org", "example.org"),
+    bad_domain, set_bad_domain => (
+        "A bare domain, without a scheme or a path",
+        "Нужен голый домен, без схемы и пути"
     ),
-    details_not_probed, set_details_not_probed => (
-        "This target has not been checked yet: its probes appear after a run.",
-        "Цель ещё не проверена: пробы появятся после прогона."
+    duplicate_domain, set_duplicate_domain => (
+        "That domain is already in the list",
+        "Такой домен уже есть в списке"
+    ),
+    added, set_added => ("Added", "Добавлено"),
+
+    // The table.
+    col_target, set_col_target => ("Target", "Цель"),
+    col_reason, set_col_reason => ("Reason", "Причина"),
+    col_verdict, set_col_verdict => ("Verdict", "Вердикт"),
+    col_time, set_col_time => ("Time", "Время"),
+
+    // The dashboard.
+    dash_ok, set_dash_ok => ("reachable", "доступно"),
+    dash_blocked, set_dash_blocked => ("blocked", "режется"),
+    dash_unknown, set_dash_unknown => ("unknown", "неизвестно"),
+
+    // The verdicts, in four words.
+    badge_ok, set_badge_ok => ("reachable", "доступно"),
+    badge_provider, set_badge_provider => ("provider", "провайдер"),
+    badge_service, set_badge_service => ("the service itself", "сам сервис"),
+    badge_unknown, set_badge_unknown => ("unknown", "неизвестно"),
+    badge_none, set_badge_none => ("—", "—"),
+
+    // The table's reason column.
+    why_ok, set_why_ok => ("every probe passed", "все пробы прошли"),
+    why_dns_spoof, set_why_dns_spoof => (
+        "the resolver answers with someone else's address",
+        "резолвер отдаёт чужой адрес"
+    ),
+    why_dpi_sni, set_why_dpi_sni => (
+        "the handshake dies on the real name",
+        "рукопожатие гибнет на настоящем имени"
+    ),
+    why_ip_block, set_why_ip_block => ("the address does not answer", "адрес не отвечает"),
+    why_host_filter, set_why_host_filter => (
+        "the request dies on the real Host",
+        "запрос гибнет на настоящем Host"
+    ),
+    why_l4_drop, set_why_l4_drop => (
+        "the connection breaks mid-transfer",
+        "соединение рвётся на середине передачи"
+    ),
+    why_geo_block, set_why_geo_block => (
+        "the service refuses this region",
+        "сервис отказывает этому региону"
+    ),
+    why_unknown, set_why_unknown => ("the facts do not add up", "факты не сходятся"),
+    why_path_block, set_why_path_block => (
+        "blocked on the way, open through the tunnel",
+        "режется на пути, открыто через туннель"
+    ),
+    why_both_ok, set_why_both_ok => ("open both ways", "открыто и так, и так"),
+    why_service_block, set_why_service_block => ("closed both ways", "закрыто и так, и так"),
+    why_not_probed, set_why_not_probed => ("not checked yet", "ещё не проверено"),
+
+    // The inspector.
+    step_dns, set_step_dns => ("DNS", "DNS"),
+    step_tcp, set_step_tcp => ("TCP", "TCP"),
+    step_tls, set_step_tls => ("TLS", "TLS"),
+    step_http, set_step_http => ("HTTP", "HTTP"),
+    step_payload, set_step_payload => ("l4-25", "l4-25"),
+    step_quic, set_step_quic => ("QUIC", "QUIC"),
+    step_tunnel, set_step_tunnel => ("Tunnel", "Туннель"),
+    note_pending_dns, set_note_pending_dns => ("system against DoH", "система против DoH"),
+    note_pending_tcp, set_note_pending_tcp => ("connect 443", "connect 443"),
+    note_pending_tls, set_note_pending_tls => ("the real SNI", "настоящий SNI"),
+    note_pending_http, set_note_pending_http => ("the real Host", "настоящий Host"),
+    note_pending_payload, set_note_pending_payload => ("reads ~64 KB", "чтение ~64 КБ"),
+    note_pending_quic, set_note_pending_quic => ("the UDP path", "UDP-путь"),
+    note_pending_tunnel, set_note_pending_tunnel => ("direct vs tunnel", "дифф direct/tunnel"),
+    res_ok, set_res_ok => ("ok", "ок"),
+    res_fail, set_res_fail => ("failed", "сбой"),
+    res_na, set_res_na => ("n/a", "н/д"),
+    res_silent, set_res_silent => ("silent", "молчит"),
+    res_reset, set_res_reset => ("reset", "сброс"),
+    res_timeout, set_res_timeout => ("timeout", "таймаут"),
+    res_answered, set_res_answered => ("answered", "ответил"),
+    res_redirect, set_res_redirect => ("redirect", "редирект"),
+    res_drop, set_res_drop => ("drop", "обрыв"),
+    res_full, set_res_full => ("full", "полностью"),
+    res_stalled, set_res_stalled => ("stalled", "зависло"),
+    note_dns_ok, set_note_dns_ok => ("system and DoH agree", "система и DoH сходятся"),
+    note_dns_spoof, set_note_dns_spoof => (
+        "the system resolver answers with a foreign pool",
+        "системный резолвер отдаёт чужой пул"
+    ),
+    note_dns_ref, set_note_dns_ref => ("the reference is unreachable", "эталон недоступен"),
+    note_tcp_ok, set_note_tcp_ok => ("connected", "соединение установлено"),
+    note_tcp_fail, set_note_tcp_fail => ("no connection", "соединения нет"),
+    note_tls_ok, set_note_tls_ok => ("the server answered", "сервер ответил"),
+    note_tls_rst, set_note_tls_rst => (
+        "reset right after ClientHello",
+        "сброс сразу после ClientHello"
+    ),
+    note_tls_alert, set_note_tls_alert => ("a TLS alert came back", "вернулся TLS-алерт"),
+    note_tls_mismatch, set_note_tls_mismatch => (
+        "a certificate for another name — expected",
+        "сертификат на другое имя — так и должно быть"
+    ),
+    note_http_ok, set_note_http_ok => ("the page came back", "страница вернулась"),
+    note_http_status, set_note_http_status => ("a status came back", "вернулся статус"),
+    note_http_reset, set_note_http_reset => ("reset on the real Host", "сброс на настоящем Host"),
+    note_payload_full, set_note_payload_full => ("the body came through", "тело дошло"),
+    note_payload_drop, set_note_payload_drop => ("the body broke off", "тело оборвалось"),
+    note_payload_na, set_note_payload_na => (
+        "the handshake did not get there",
+        "до рукопожатия не дошло"
+    ),
+    note_quic_answer, set_note_quic_answer => (
+        "the server answered over UDP",
+        "сервер ответил по UDP"
+    ),
+    note_quic_silent, set_note_quic_silent => (
+        "silence — maybe NAT, maybe a block",
+        "молчание — может NAT, может блок"
+    ),
+    note_tunnel_ok, set_note_tunnel_ok => ("open through the tunnel", "через туннель открыто"),
+    note_tunnel_path, set_note_tunnel_path => ("blocked on the way", "режется на пути"),
+    note_tunnel_service, set_note_tunnel_service => (
+        "closed even through the tunnel",
+        "закрыто и через туннель"
+    ),
+    note_tunnel_off, set_note_tunnel_off => ("no tunnel configured", "туннель не задан"),
+
+    // The empty states.
+    empty_none_title, set_empty_none_title => ("No targets are ticked", "Ни одна цель не отмечена"),
+    empty_none_sub, set_empty_none_sub => (
+        "Tick a few on the left — or all of them — and press Check.",
+        "Отметьте несколько слева — или все — и нажмите «Проверить»."
+    ),
+    empty_norun_title, set_empty_norun_title => (
+        "Nothing has been checked yet",
+        "Проверок ещё не было"
+    ),
+    empty_norun_sub, set_empty_norun_sub => (
+        "The table fills in as the probes come back; the walls end up on top.",
+        "Таблица заполняется по мере проб; стены окажутся сверху."
     ),
 
-    // Settings
-    check, set_check => ("Check", "Проверить"),
+    // The settings popover.
     timeout, set_timeout => ("Probe timeout, sec", "Таймаут пробы, сек"),
     timeout_hint, set_timeout_hint => (
         "a total budget: the connection and the handshake",
@@ -153,88 +281,35 @@ labels! {
         "пусто — без туннеля; адрес включает дифф «напрямую vs туннель»"
     ),
     socks5_placeholder, set_socks5_placeholder => ("127.0.0.1:1080", "127.0.0.1:1080"),
-
-    // Theme and language
     dark, set_dark => ("Dark", "Тёмная"),
     light, set_light => ("Light", "Светлая"),
+    language, set_language => ("Language", "Язык"),
+    frame, set_frame => ("Window frame", "Рамка окна"),
 
-    // Status
-    ready, set_ready => ("Ready to check", "Готов к проверке"),
-    checking, set_checking => ("Checking", "Проверка"),
-    done, set_done => ("Checked", "Проверено"),
-    control_dead, set_control_dead => (
-        "The control target did not answer: the network is down or filtered as a whole",
-        "Контрольная цель не ответила: сеть недоступна или фильтруется целиком"
-    ),
-    run_failed, set_run_failed => ("The run failed", "Прогон не удался"),
-    nothing_selected, set_nothing_selected => ("No target is selected", "Не выбрано ни одной цели"),
-    bad_socks5, set_bad_socks5 => ("The SOCKS5 address is not valid", "Адрес SOCKS5 не разобран"),
+    // The header's icon buttons.
+    theme, set_theme => ("Theme", "Тема"),
 
-    // Categories
+    // The groups of the target list.
     category_video_hosting, set_category_video_hosting => ("Video hosting", "Видеохостинги"),
     category_social, set_category_social => ("Social networks", "Соцсети"),
     category_messenger, set_category_messenger => ("Messengers", "Мессенджеры"),
-    category_news, set_category_news => ("News", "Новости"),
-    category_search, set_category_search => ("Search", "Поиск"),
-    category_ai, set_category_ai => ("AI assistants", "ИИ-ассистенты"),
     category_audio, set_category_audio => ("Audio streaming", "Аудиостриминг"),
     category_video, set_category_video => ("Video streaming", "Видеостриминг"),
     category_games, set_category_games => ("Games", "Игры"),
     category_encyclopedia, set_category_encyclopedia => ("Encyclopedias", "Энциклопедии"),
     category_development, set_category_development => ("Development", "Разработка"),
     category_custom, set_category_custom => ("Custom", "Пользовательские"),
+    category_news, set_category_news => ("News", "Новости"),
+    category_search, set_category_search => ("Search", "Поиск"),
+    category_ai, set_category_ai => ("AI assistants", "ИИ-ассистенты"),
 
-    // Custom targets
-    add_domain, set_add_domain => ("+ add a domain", "+ добавить домен"),
-    add, set_add => ("Add", "Добавить"),
-    cancel, set_cancel => ("Cancel", "Отмена"),
-    domain_placeholder, set_domain_placeholder => ("example.org", "example.org"),
-    remove, set_remove => ("Remove", "Удалить"),
-    custom_mark, set_custom_mark => ("custom", "пользовательская"),
-    bad_domain, set_bad_domain => (
-        "A bare domain, without a scheme or a path",
-        "Нужен голый домен, без схемы и пути"
-    ),
-    duplicate_domain, set_duplicate_domain => (
-        "That domain is already in the list",
-        "Такой домен уже есть в списке"
-    ),
-
-    // Frame
-    frame, set_frame => ("Window frame", "Рамка окна"),
-
-    // The menu, the settings dialog and the panes.
-    menu, set_menu => ("Menu", "Меню"),
-    settings, set_settings => ("Settings", "Настройки"),
-    close, set_close => ("Close", "Закрыть"),
-    done_settings, set_done_settings => ("Done", "Готово"),
-    export, set_export => ("Export", "Экспорт"),
-    targets_count, set_targets_count => ("targets", "целей"),
-    checked_count, set_checked_count => ("checked", "отмечено"),
-    collapse, set_collapse => ("Collapse the group", "Свернуть группу"),
-    expand, set_expand => ("Expand the group", "Развернуть группу"),
-
-    // Dashboard
-    dash_ok, set_dash_ok => ("reachable", "доступно"),
-    dash_blocked, set_dash_blocked => ("blocked", "режется"),
-    dash_unknown, set_dash_unknown => ("unknown", "неизвестно"),
-    dash_empty, set_dash_empty => ("No run yet", "Прогонов ещё не было"),
-    dash_delta, set_dash_delta => ("vs the previous run", "к прошлому прогону"),
-    seconds, set_seconds => ("s", "с"),
-
-    // Watchdog
-    interrupted, set_interrupted => (
-        "The run was interrupted by the watchdog",
-        "Прогон прерван сторожевым таймером"
-    ),
-
-    // Export
-    export_text, set_export_text => ("Export text", "Экспорт текста"),
-    export_json, set_export_json => ("Export JSON", "Экспорт JSON"),
+    // The export and the clock.
     export_title, set_export_title => ("Save the report", "Сохранить отчёт"),
     export_empty, set_export_empty => ("Run the probes first", "Сначала прогон"),
     export_done, set_export_done => ("Written", "Записано"),
     export_failed, set_export_failed => ("Could not write", "Не удалось записать"),
+    seconds, set_seconds => ("s", "с"),
+    minutes, set_minutes => ("min", "мин"),
 }
 
 #[cfg(test)]
@@ -248,12 +323,12 @@ mod tests {
         // The macro makes both structs from the same rows, so a missing
         // translation cannot compile. This test guards the other half: an
         // empty string is a translation someone forgot to write.
-        assert!(!en.subtitle.is_empty());
-        assert!(!ru.subtitle.is_empty());
         assert!(!en.check.is_empty());
         assert!(!ru.check.is_empty());
-        assert_ne!(en.subtitle, ru.subtitle);
+        assert!(!en.badge_provider.is_empty());
+        assert!(!ru.badge_provider.is_empty());
         assert_ne!(en.check, ru.check);
+        assert_ne!(en.badge_provider, ru.badge_provider);
     }
 
     #[test]
