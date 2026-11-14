@@ -1,0 +1,833 @@
+// The Oko window: the target table on the left, the probe details on the
+// right, the settings and the run button above them.
+//
+// Every user-visible string comes from the `Labels` global, which the Rust side
+// fills from `src/i18n.rs`. The palette lives in `Theme`; the window frame is
+// the coral the Ether family uses.
+
+import { ScrollView } from "std-widgets.slint";
+
+// One row of the target table.
+export struct TargetRow {
+    index: int,
+    domain: string,
+    checked: bool,
+    // The canonical verdict name, empty until the target has been probed.
+    verdict: string,
+    // 0 ok, 1 warn, 2 bad, 3 undetermined, 4 not probed.
+    level: int,
+    // The level in the window's language: the report's own words stay English.
+    level-text: string,
+    // The tunnel comparison, empty until a tunnel run has been made.
+    diff: string,
+    running: bool,
+}
+
+export global Labels {
+    in property <string> subtitle;
+    in property <string> targets;
+    in property <string> details;
+    in property <string> details-empty;
+    in property <string> check;
+    in property <string> check-all;
+    in property <string> check-none;
+    in property <string> timeout;
+    in property <string> timeout-hint;
+    in property <string> socks5;
+    in property <string> socks5-hint;
+    in property <string> socks5-placeholder;
+    in property <string> dark;
+    in property <string> light;
+    in property <string> export-text;
+    in property <string> export-json;
+    in property <string> export-title;
+    in property <string> not-checked;
+    in property <string> in-progress;
+    in property <string> level-ok;
+    in property <string> level-warn;
+    in property <string> level-bad;
+    in property <string> level-undetermined;
+    in property <string> col-target;
+    in property <string> col-verdict;
+    in property <string> ready;
+    in property <string> checking;
+    in property <string> done;
+    in property <string> control-dead;
+    in property <string> run-failed;
+    in property <string> nothing-selected;
+    in property <string> bad-socks5;
+    in property <string> export-empty;
+    in property <string> export-done;
+    in property <string> export-failed;
+}
+
+export global Theme {
+    out property <string> font-family: "Adwaita Sans";
+    out property <string> mono: "JetBrains Mono";
+
+    in-out property <bool> dark: true;
+
+    out property <color> bg: dark ? #16161a : #f6f5f4;
+    // The page is lit from above, like the site's --bg-glow.
+    out property <brush> bg-glow: dark
+        ? @linear-gradient(180deg, #232329 0%, #1b1b1f 45%, #16161a 100%)
+        : @linear-gradient(180deg, #ffffff 0%, #f6f5f4 55%, #efeeec 100%);
+    out property <color> surface: dark ? #242428 : #ffffff;
+    out property <color> surface-2: dark ? #303036 : #f0efed;
+    out property <color> surface-3: dark ? #1b1b1f : #faf9f8;
+    // Fields sit below the card they are on, in both themes.
+    out property <color> field: dark ? #1b1b1f : #f0efed;
+    out property <color> line: dark ? #FFFFFF1A : #0000001F;
+    out property <color> line-soft: dark ? #FFFFFF12 : #00000014;
+    out property <color> text: dark ? #f6f5f4 : #1b1b1f;
+    out property <color> text-2: dark ? #FFFFFFE0 : #2b2b31;
+    out property <color> dim: dark ? #8b8b93 : #5e5e66;
+    out property <color> dim-2: dark ? #FFFFFF8C : #6b6b73;
+
+    // #d9531e on white is 4.03:1, so light-theme text uses accent-ink instead.
+    out property <color> accent: dark ? #fb8762 : #d9531e;
+    out property <color> accent-ink: dark ? #fb8762 : #b8431a;
+    out property <color> on-accent: dark ? #16161a : #ffffff;
+    out property <color> accent-soft: dark ? #FB87621F : #D9531E1A;
+    out property <color> accent-soft-2: dark ? #FB876242 : #D9531E33;
+    out property <color> accent-line: dark ? #FB876273 : #D9531E66;
+
+    // The verdict levels: ok is green, warn and undetermined are yellow, a
+    // block is red. The greens are the only hue the Ether palette adds.
+    out property <color> ok: dark ? #7fd18b : #2e7d32;
+    out property <color> ok-soft: dark ? #7FD18B1F : #2E7D321A;
+    out property <color> warn: dark ? #f8e45c : #8a6d00;
+    out property <color> warn-soft: dark ? #F8E45C1F : #8A6D001A;
+    out property <color> bad: dark ? #f66151 : #b3261e;
+    out property <color> bad-soft: dark ? #F661511F : #B3261E1A;
+
+    // The 1px light line along the top edge of a card.
+    out property <color> highlight: dark ? #FFFFFF12 : #FFFFFFE6;
+    out property <color> shadow: dark ? #0000008C : #0000001F;
+    out property <length> shadow-blur: 30px;
+
+    out property <length> radius-win: 24px;
+    out property <length> radius-card: 16px;
+    out property <length> radius-sm: 10px;
+
+    out property <duration> motion: 140ms;
+}
+
+// A solid card: hairline border, a light line along the top edge, and a shadow.
+component Card inherits Rectangle {
+    in property <length> radius: Theme.radius-card;
+    in property <color> fill: Theme.surface;
+    in property <color> edge: Theme.line;
+
+    background: root.fill;
+    border-radius: root.radius;
+    border-width: 1px;
+    border-color: root.edge;
+    drop-shadow-color: Theme.shadow;
+    drop-shadow-blur: Theme.shadow-blur;
+    drop-shadow-offset-y: 8px;
+
+    Rectangle {
+        x: root.radius;
+        y: 1px;
+        width: parent.width - root.radius * 2;
+        height: 1px;
+        background: Theme.highlight;
+    }
+}
+
+// A small rounded label, used for the verdict in the table.
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <color> ink: Theme.dim;
+    in property <color> fill: transparent;
+
+    height: 22px;
+    width: label.preferred-width + 16px;
+    border-radius: 7px;
+    background: root.fill;
+    border-width: 1px;
+    border-color: root.ink.transparentize(0.72);
+
+    label := Text {
+        text: root.text;
+        color: root.ink;
+        font-family: Theme.mono;
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+// A flat button with a hairline border.
+component GhostButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 30px;
+    width: label.preferred-width + 24px;
+    border-radius: 9px;
+    background: touch.has-hover && root.enabled ? Theme.surface-2 : transparent;
+    border-width: 1px;
+    border-color: Theme.line;
+    opacity: root.enabled ? 1 : 0.45;
+
+    label := Text {
+        text: root.text;
+        color: Theme.text-2;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The one coral button in the window.
+component PrimaryButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 38px;
+    border-radius: 11px;
+    background: touch.pressed && root.enabled ? Theme.accent-ink : Theme.accent;
+    opacity: root.enabled ? 1 : 0.45;
+
+    Text {
+        text: root.text;
+        color: Theme.on-accent;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// One half of a two-option switch.
+component Segment inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked();
+
+    horizontal-stretch: 1;
+    border-radius: 7px;
+    background: root.active ? Theme.accent-soft : transparent;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent-line : transparent;
+
+    Text {
+        text: root.text;
+        color: root.active ? Theme.accent-ink : Theme.dim;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A two-option switch: the theme and the language both use it.
+component Segmented inherits Rectangle {
+    in property <string> first;
+    in property <string> second;
+    in property <bool> second-active;
+    callback pick-first();
+    callback pick-second();
+
+    height: 30px;
+    width: 148px;
+    border-radius: 9px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+
+        Segment {
+            text: root.first;
+            active: !root.second-active;
+            clicked => {
+                root.pick-first();
+            }
+        }
+        Segment {
+            text: root.second;
+            active: root.second-active;
+            clicked => {
+                root.pick-second();
+            }
+        }
+    }
+}
+
+// One button of the stepper.
+component StepButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    width: 28px;
+    border-radius: 7px;
+    background: touch.has-hover ? Theme.surface-2 : transparent;
+
+    Text {
+        text: root.text;
+        color: Theme.text-2;
+        font-size: 15px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A number with a minus and a plus: the timeout.
+component Stepper inherits Rectangle {
+    in property <int> value;
+    callback dec();
+    callback inc();
+
+    height: 30px;
+    width: 104px;
+    border-radius: 9px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+
+        StepButton {
+            text: "-";
+            clicked => {
+                root.dec();
+            }
+        }
+        Text {
+            text: "\{root.value}";
+            color: Theme.text;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        StepButton {
+            text: "+";
+            clicked => {
+                root.inc();
+            }
+        }
+    }
+}
+
+// A text field with a placeholder.
+component Field inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    callback edited(string);
+
+    height: 30px;
+    border-radius: 9px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent-line : Theme.line;
+
+    input := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        color: Theme.text;
+        font-size: 13px;
+        vertical-alignment: center;
+        single-line: true;
+        edited => {
+            root.edited(self.text);
+        }
+    }
+
+    if input.text == "" && !input.has-focus: Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.placeholder;
+        color: Theme.dim;
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+}
+
+// The checkbox of one table row.
+component Check inherits Rectangle {
+    in property <bool> checked;
+    callback toggled();
+
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: root.checked ? Theme.accent : transparent;
+    border-width: 1.5px;
+    border-color: root.checked ? Theme.accent : Theme.dim;
+
+    if root.checked: Path {
+        width: 12px;
+        height: 12px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 1 6 L 4.5 9.5 L 11 2.5";
+        stroke: Theme.on-accent;
+        stroke-width: 2px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
+    TouchArea {
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+// One row of the target table.
+component TargetItem inherits Rectangle {
+    in property <TargetRow> item;
+    in property <bool> selected;
+    callback toggle();
+    callback select();
+
+    height: 54px;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.accent-soft : (touch.has-hover ? Theme.surface-2 : transparent);
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+
+        Check {
+            checked: root.item.checked;
+            vertical-stretch: 0;
+            toggled => {
+                root.toggle();
+            }
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+            vertical-stretch: 1;
+            alignment: center;
+
+            Text {
+                text: root.item.domain;
+                color: Theme.text;
+                font-size: 14px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.item.running ? Labels.in-progress : (root.item.verdict == "" ? Labels.not-checked : (root.item.diff == "" ? root.item.level-text : root.item.level-text + " · " + root.item.diff));
+                color: Theme.dim;
+                font-size: 11px;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        Pill {
+            text: root.item.verdict == "" ? "—" : root.item.verdict;
+            ink: root.item.level == 0 ? Theme.ok : (root.item.level == 2 ? Theme.bad : (root.item.level == 4 ? Theme.dim : Theme.warn));
+            fill: root.item.level == 0 ? Theme.ok-soft : (root.item.level == 2 ? Theme.bad-soft : (root.item.level == 4 ? transparent : Theme.warn-soft));
+            vertical-stretch: 0;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.select();
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Oko";
+    preferred-width: 1000px;
+    preferred-height: 700px;
+    min-width: 860px;
+    min-height: 560px;
+    default-font-size: 14px;
+    default-font-family: Theme.font-family;
+    // The 3px frame is the window background; the surface sits inside it.
+    background: Theme.accent;
+    property <length> frame-width: 3px;
+
+    in-out property <[TargetRow]> rows;
+    in-out property <int> selected: -1;
+    in-out property <bool> running: false;
+    in-out property <float> progress: 0;
+    in-out property <string> status;
+    in-out property <string> detail;
+    in-out property <string> export-status;
+    in-out property <int> timeout-value: 5;
+    in-out property <string> socks5-text;
+    in-out property <string> lang: "en";
+
+    callback toggle(int);
+    callback select(int);
+    callback check-all();
+    callback check-none();
+    callback start();
+    callback timeout-dec();
+    callback timeout-inc();
+    callback export-text();
+    callback export-json();
+    callback pick-dark();
+    callback pick-light();
+    callback pick-ru();
+    callback pick-en();
+    callback socks5-edited(string);
+
+    Rectangle {
+        x: root.frame-width;
+        y: root.frame-width;
+        width: parent.width - 2 * root.frame-width;
+        height: parent.height - 2 * root.frame-width;
+        border-radius: Theme.radius-win;
+        background: Theme.bg-glow;
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+
+            // Header: the name, the purpose, the theme and the language.
+            HorizontalLayout {
+                spacing: 12px;
+
+                VerticalLayout {
+                    spacing: 2px;
+
+                    Text {
+                        text: "Oko";
+                        color: Theme.text;
+                        font-size: 26px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: Labels.subtitle;
+                        color: Theme.dim;
+                        font-size: 12px;
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Segmented {
+                    first: Labels.dark;
+                    second: Labels.light;
+                    second-active: !Theme.dark;
+                    pick-first => {
+                        root.pick-dark();
+                    }
+                    pick-second => {
+                        root.pick-light();
+                    }
+                }
+                Segmented {
+                    first: "RU";
+                    second: "EN";
+                    second-active: root.lang == "en";
+                    pick-first => {
+                        root.pick-ru();
+                    }
+                    pick-second => {
+                        root.pick-en();
+                    }
+                }
+            }
+
+            // Settings and the run button.
+            Card {
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        spacing: 18px;
+
+                        VerticalLayout {
+                            spacing: 3px;
+
+                            Text {
+                                text: Labels.timeout;
+                                color: Theme.text-2;
+                                font-size: 12px;
+                            }
+                            Stepper {
+                                value: root.timeout-value;
+                                dec => {
+                                    root.timeout-dec();
+                                }
+                                inc => {
+                                    root.timeout-inc();
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 3px;
+                            horizontal-stretch: 1;
+
+                            Text {
+                                text: Labels.socks5;
+                                color: Theme.text-2;
+                                font-size: 12px;
+                            }
+                            Field {
+                                text: root.socks5-text;
+                                placeholder: Labels.socks5-placeholder;
+                                edited(text) => {
+                                    root.socks5-edited(text);
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 18px;
+
+                        Text {
+                            text: Labels.timeout-hint;
+                            color: Theme.dim;
+                            font-size: 11px;
+                            width: 140px;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: Labels.socks5-hint;
+                            color: Theme.dim;
+                            font-size: 11px;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    // Progress and the status line.
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Rectangle {
+                            height: 6px;
+                            border-radius: 3px;
+                            background: Theme.field;
+                            horizontal-stretch: 1;
+                            vertical-stretch: 0;
+
+                            Rectangle {
+                                width: parent.width * root.progress;
+                                height: parent.height;
+                                border-radius: 3px;
+                                background: Theme.accent;
+                                animate width { duration: Theme.motion; }
+                            }
+                        }
+                        Text {
+                            text: root.status;
+                            color: Theme.dim;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            width: 300px;
+                            overflow: elide;
+                        }
+                    }
+
+                    PrimaryButton {
+                        text: Labels.check;
+                        enabled: !root.running;
+                        clicked => {
+                            root.start();
+                        }
+                    }
+                }
+            }
+
+            // The table and the details.
+            HorizontalLayout {
+                spacing: 14px;
+                vertical-stretch: 1;
+
+                Card {
+                    horizontal-stretch: 44;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: Labels.targets;
+                                color: Theme.text;
+                                font-size: 14px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                            }
+                            GhostButton {
+                                text: Labels.check-all;
+                                clicked => {
+                                    root.check-all();
+                                }
+                            }
+                            GhostButton {
+                                text: Labels.check-none;
+                                clicked => {
+                                    root.check-none();
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 38px;
+                            padding-right: 10px;
+
+                            Text {
+                                text: Labels.col-target;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: Labels.col-verdict;
+                                color: Theme.dim;
+                                font-size: 11px;
+                            }
+                        }
+
+                        ScrollView {
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                spacing: 2px;
+
+                                for entry in root.rows: TargetItem {
+                                    item: entry;
+                                    selected: root.selected == entry.index;
+                                    toggle => {
+                                        root.toggle(entry.index);
+                                    }
+                                    select => {
+                                        root.select(entry.index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Card {
+                    horizontal-stretch: 56;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 8px;
+
+                        Text {
+                            text: Labels.details;
+                            color: Theme.text;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+
+                        if root.detail == "": Text {
+                            text: Labels.details-empty;
+                            color: Theme.dim;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            vertical-stretch: 1;
+                        }
+
+                        // The report is the CLI's text, so it wraps rather than
+                        // scrolls sideways: a long line is still readable, and
+                        // the columns only break where the panel is too narrow.
+                        if root.detail != "": Flickable {
+                            content-width: self.width;
+                            content-height: detail-text.preferred-height;
+                            vertical-stretch: 1;
+
+                            detail-text := Text {
+                                width: parent.width;
+                                text: root.detail;
+                                color: Theme.text-2;
+                                font-family: Theme.mono;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Export.
+            HorizontalLayout {
+                spacing: 8px;
+
+                GhostButton {
+                    text: Labels.export-text;
+                    enabled: root.detail != "";
+                    clicked => {
+                        root.export-text();
+                    }
+                }
+                GhostButton {
+                    text: Labels.export-json;
+                    enabled: root.detail != "";
+                    clicked => {
+                        root.export-json();
+                    }
+                }
+                Text {
+                    text: root.export-status;
+                    color: Theme.dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+}

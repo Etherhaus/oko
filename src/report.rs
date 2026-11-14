@@ -107,33 +107,7 @@ pub fn render(report: &RunReport) -> String {
 
     for target in &report.targets {
         let _ = writeln!(out);
-        let _ = writeln!(out, "target {}", target.target.label());
-        render_verdict(&mut out, &target.verdict);
-
-        let _ = writeln!(out);
-        render_dns(&mut out, &target.dns);
-        let _ = writeln!(out);
-        render_tcp(&mut out, &target.tcp);
-        if let Some(tls) = &target.tls {
-            let _ = writeln!(out);
-            render_tls(&mut out, tls);
-        }
-        if let Some(http) = &target.http {
-            let _ = writeln!(out);
-            render_http(&mut out, http);
-        }
-        if let Some(payload) = &target.payload {
-            let _ = writeln!(out);
-            render_payload(&mut out, payload);
-        }
-        if let Some(quic) = &target.quic {
-            let _ = writeln!(out);
-            render_quic(&mut out, quic);
-        }
-        if target.verdict.kind != VerdictKind::Ok {
-            let _ = writeln!(out);
-            render_facts(&mut out, &target.verdict);
-        }
+        out.push_str(&render_target(target, None));
     }
 
     let _ = writeln!(out);
@@ -157,6 +131,62 @@ pub fn render(report: &RunReport) -> String {
     let _ = writeln!(out);
     render_notes(&mut out);
     out
+}
+
+/// Render one target's probes as text: the sections the full report prints,
+/// plus the tunnel run and the diff when they exist.
+///
+/// The window shows this text in its details panel, so the panel and the CLI
+/// never drift apart.
+pub fn render_target(target: &TargetReport, tunnel: Option<&TargetReport>) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "target {}", target.target.label());
+    render_verdict(&mut out, &target.verdict);
+    render_sections(&mut out, target);
+    if target.verdict.kind != VerdictKind::Ok {
+        let _ = writeln!(out);
+        render_facts(&mut out, &target.verdict);
+    }
+
+    if let Some(tunnel) = tunnel {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "tunnel");
+        render_verdict(&mut out, &tunnel.verdict);
+        render_sections(&mut out, tunnel);
+    }
+
+    if let Some(diff) = &target.diff {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "diff");
+        let _ = writeln!(out, "  direct  {}", diff.direct.as_str());
+        let _ = writeln!(out, "  tunnel  {}", diff.tunnel.as_str());
+        let _ = writeln!(out, "  result  {}: {}", diff.kind.describe(), diff.reason);
+    }
+    out
+}
+
+/// The probe sections of one target, without the verdict.
+fn render_sections(out: &mut String, target: &TargetReport) {
+    let _ = writeln!(out);
+    render_dns(out, &target.dns);
+    let _ = writeln!(out);
+    render_tcp(out, &target.tcp);
+    if let Some(tls) = &target.tls {
+        let _ = writeln!(out);
+        render_tls(out, tls);
+    }
+    if let Some(http) = &target.http {
+        let _ = writeln!(out);
+        render_http(out, http);
+    }
+    if let Some(payload) = &target.payload {
+        let _ = writeln!(out);
+        render_payload(out, payload);
+    }
+    if let Some(quic) = &target.quic {
+        let _ = writeln!(out);
+        render_quic(out, quic);
+    }
 }
 
 /// Render the whole run as JSON.

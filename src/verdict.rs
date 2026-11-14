@@ -480,6 +480,16 @@ pub enum DiffKind {
 }
 
 impl DiffKind {
+    /// The canonical name, the same one the JSON carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DiffKind::BothOk => "both_ok",
+            DiffKind::PathBlock => "path_block",
+            DiffKind::ServiceBlock => "service_block",
+            DiffKind::Unknown => "unknown",
+        }
+    }
+
     /// The conclusion in the words the diff table uses.
     pub fn describe(self) -> &'static str {
         match self {
@@ -1237,6 +1247,14 @@ mod tests {
     fn both_paths_working_is_not_a_diff() {
         let diff = diff(&verdict(VerdictKind::Ok), &verdict(VerdictKind::Ok));
         assert_eq!(diff.kind, DiffKind::BothOk);
+    }
+
+    #[test]
+    fn a_diff_kind_carries_the_name_the_json_uses() {
+        assert_eq!(DiffKind::BothOk.as_str(), "both_ok");
+        assert_eq!(DiffKind::PathBlock.as_str(), "path_block");
+        assert_eq!(DiffKind::ServiceBlock.as_str(), "service_block");
+        assert_eq!(DiffKind::Unknown.as_str(), "unknown");
     }
 
     #[test]
