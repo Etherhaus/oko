@@ -1,0 +1,6 @@
+target/
+dist/
+
+# Probe reports carry the user's network fingerprint: never commit them.
+*.oko.txt
+*.oko.json

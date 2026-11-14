@@ -1,0 +1,23 @@
+[package]
+name = "oko-detector"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A cross-platform detector for DNS, DPI and IP-level blocking of online services"
+license = "MIT"
+repository = "https://github.com/etherhaus/oko"
+keywords = ["network", "censorship", "diagnostics", "dpi", "cli"]
+categories = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "oko"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "time"] }
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+
+[profile.release]
+strip = true
+lto = true
