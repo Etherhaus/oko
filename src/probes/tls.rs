@@ -19,6 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::format;
+use crate::route::Route;
 
 /// How much of the server's answer to read in one go.
 const READ_BUFFER: usize = 16 * 1024;
@@ -136,18 +137,24 @@ impl TlsProbe {
 /// Handshake with `domain` as the SNI. When that does not reach the server, try
 /// again with `control_sni` on the same address: if the server answers the
 /// control name, the name is what the path objects to.
-pub async fn probe(domain: &str, ip: IpAddr, port: u16, control_sni: &str, timeout: Duration) -> TlsProbe {
-    let config = config();
+pub async fn probe(
+    domain: &str,
+    ip: IpAddr,
+    port: u16,
+    control_sni: &str,
+    timeout: Duration,
+    route: Route,
+) -> TlsProbe {
     let real = TlsAttempt {
         sni: domain.to_string(),
-        outcome: attempt(&config, ip, port, domain, timeout).await,
+        outcome: attempt(ip, port, domain, timeout, route).await,
     };
     let control = if real.outcome.reached_server() {
         None
     } else {
         Some(TlsAttempt {
             sni: control_sni.to_string(),
-            outcome: attempt(&config, ip, port, control_sni, timeout).await,
+            outcome: attempt(ip, port, control_sni, timeout, route).await,
         })
     };
     TlsProbe {
@@ -176,57 +183,75 @@ fn config() -> Arc<ClientConfig> {
         .clone()
 }
 
-async fn attempt(config: &Arc<ClientConfig>, ip: IpAddr, port: u16, sni: &str, timeout: Duration) -> TlsOutcome {
+/// A completed handshake, with the connection still open.
+pub struct Handshake {
+    pub stream: TcpStream,
+    pub conn: ClientConnection,
+    /// Bytes the server sent during the handshake. The payload probe adds them
+    /// to the body to report the whole stream size.
+    pub server_bytes: usize,
+    pub elapsed: Duration,
+}
+
+/// Handshake with `sni` and hand the live connection back. The caller owns it
+/// from here: the payload probe sends a request over it.
+pub async fn handshake(
+    ip: IpAddr,
+    port: u16,
+    sni: &str,
+    timeout: Duration,
+    route: Route,
+) -> Result<Handshake, TlsOutcome> {
     let started = Instant::now();
     let deadline = started + timeout;
 
     let name = match ServerName::try_from(sni.to_owned()) {
         Ok(name) => name,
         Err(err) => {
-            return TlsOutcome::Failed {
+            return Err(TlsOutcome::Failed {
                 reason: format!("{sni} is not a usable server name: {err}"),
                 elapsed: started.elapsed(),
-            };
+            });
         }
     };
-    let mut conn = match ClientConnection::new(config.clone(), name) {
+    let mut conn = match ClientConnection::new(config(), name) {
         Ok(conn) => conn,
         Err(err) => {
-            return TlsOutcome::Failed {
+            return Err(TlsOutcome::Failed {
                 reason: format!("cannot start the handshake: {err}"),
                 elapsed: started.elapsed(),
-            };
+            });
         }
     };
 
     let addr = SocketAddr::new(ip, port);
-    let mut stream = match tokio::time::timeout_at(deadline.into(), TcpStream::connect(addr)).await {
+    let mut stream = match tokio::time::timeout_at(deadline.into(), route.connect(addr, timeout)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {
-            return TlsOutcome::Failed {
+            return Err(TlsOutcome::Failed {
                 reason: format!("connect: {err}"),
                 elapsed: started.elapsed(),
-            };
+            });
         }
         Err(_) => {
-            return TlsOutcome::Timeout {
+            return Err(TlsOutcome::Timeout {
                 elapsed: started.elapsed(),
-            };
+            });
         }
     };
 
     let mut out = Vec::new();
     if let Err(err) = conn.write_tls(&mut out) {
-        return TlsOutcome::Failed {
+        return Err(TlsOutcome::Failed {
             reason: format!("cannot build the ClientHello: {err}"),
             elapsed: started.elapsed(),
-        };
+        });
     }
     if let Err(err) = stream.write_all(&out).await {
-        return TlsOutcome::Failed {
+        return Err(TlsOutcome::Failed {
             reason: format!("cannot send the ClientHello: {err}"),
             elapsed: started.elapsed(),
-        };
+        });
     }
 
     let mut buffer = vec![0u8; READ_BUFFER];
@@ -235,11 +260,11 @@ async fn attempt(config: &Arc<ClientConfig>, ip: IpAddr, port: u16, sni: &str, t
     loop {
         let read = match tokio::time::timeout_at(deadline.into(), stream.read(&mut buffer)).await {
             Ok(Ok(read)) => read,
-            Ok(Err(err)) => return read_failed(&err, server_bytes, started),
-            Err(_) => return stalled(server_bytes, started),
+            Ok(Err(err)) => return Err(read_failed(&err, server_bytes, started)),
+            Err(_) => return Err(stalled(server_bytes, started)),
         };
         if read == 0 {
-            return closed(server_bytes, started);
+            return Err(closed(server_bytes, started));
         }
         server_bytes += read;
 
@@ -248,31 +273,29 @@ async fn attempt(config: &Arc<ClientConfig>, ip: IpAddr, port: u16, sni: &str, t
         // dropped remainder would stall the handshake until the deadline.
         let mut chunk = &buffer[..read];
         while !chunk.is_empty() {
-            let before = chunk.len();
             match conn.read_tls(&mut chunk) {
                 Ok(0) => {
+                    return Err(TlsOutcome::Failed {
+                        reason: "the TLS buffer is full and cannot be drained".to_string(),
+                        elapsed: started.elapsed(),
+                    });
+                }
+                Ok(_) => {
                     if let Err(err) = conn.process_new_packets() {
-                        return classify_error(err, started);
-                    }
-                    if chunk.len() == before {
-                        return TlsOutcome::Failed {
-                            reason: "the TLS buffer is full and cannot be drained".to_string(),
-                            elapsed: started.elapsed(),
-                        };
+                        return Err(classify_error(err, started));
                     }
                 }
-                Ok(_) => {}
                 Err(err) => {
-                    return TlsOutcome::Failed {
+                    return Err(TlsOutcome::Failed {
                         reason: format!("cannot parse the server record: {err}"),
                         elapsed: started.elapsed(),
-                    };
+                    });
                 }
             }
         }
 
         if let Err(err) = conn.process_new_packets() {
-            return classify_error(err, started);
+            return Err(classify_error(err, started));
         }
 
         let mut out = Vec::new();
@@ -282,16 +305,27 @@ async fn attempt(config: &Arc<ClientConfig>, ip: IpAddr, port: u16, sni: &str, t
             }
         }
         if !out.is_empty() && stream.write_all(&out).await.is_err() {
-            return TlsOutcome::Failed {
+            return Err(TlsOutcome::Failed {
                 reason: "cannot send the handshake reply".to_string(),
                 elapsed: started.elapsed(),
-            };
+            });
         }
         if !conn.is_handshaking() {
-            return TlsOutcome::Ok {
+            return Ok(Handshake {
+                stream,
+                conn,
+                server_bytes,
                 elapsed: started.elapsed(),
-            };
+            });
         }
+    }
+}
+
+/// One handshake, reduced to what the TLS probe reports.
+async fn attempt(ip: IpAddr, port: u16, sni: &str, timeout: Duration, route: Route) -> TlsOutcome {
+    match handshake(ip, port, sni, timeout, route).await {
+        Ok(done) => TlsOutcome::Ok { elapsed: done.elapsed },
+        Err(outcome) => outcome,
     }
 }
 

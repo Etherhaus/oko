@@ -59,3 +59,34 @@
 - На ТСПУ настоящий SNI уходит в тишину (timeout), а не в RST — оба исхода трактуются как «сервер не ответил».
 
 **Не сделано (по брифу — следующие этапы).** l4-25, QUIC/UDP, туннель-дифф и `--socks5` (этап 3), GUI (этап 4), README/CI/SECURITY.md (этап 5).
+
+---
+
+## 2026-11-14 — Этап 3 — l4-25, QUIC/UDP, туннель-дифф, `--timeout`
+
+**Одобрение:** бриф «Oko — детектор блокировок и доступности сервисов», этап 3 (с попутными пунктами из разбора этапа 2: `--timeout`, перенос факта «разные адреса» из сводки в детали).
+
+**Сделано.**
+- `src/route.rs` — транспорт пробы: `Route::Direct` / `Route::Socks5(SocketAddr)`, `connect()` с таймаутом, SOCKS5 no-auth handshake и CONNECT, парсеры method/connect-ответов, `reply_description()`. 12 юнит-тестов без сети.
+- `src/probes/payload.rs` — после рукопожатия GET `/`, чтение до 64 КБ; исходы `Complete` / `KbDrop{range}` / `Ended` / `Truncated` / `Stalled` / `NotAttempted` / `Failed`. Обрыв в 16–20 КБ или ~25 КБ считается и по телу, и по телу+рукопожатию, и только при неполном ответе (`Content-Length` / chunked-терминатор). На dpi_sni-целях — `NotAttempted` («рукопожатие не завершилось»), не таймаут.
+- `src/probes/quic.rs` — 1200-байтный Initial с grease-версией `0x1a2a3a4a`, varint-кодировщик, разбор Version Negotiation; исходы `Answered` / `Silent` / `Failed`; тишина — `unknown`.
+- `src/probes/tls.rs` — принимает `Route`, новый `handshake()` отдаёт живой поток и счётчик байт сервера; дренаж rustls после каждого `read_tls` (баг этапа 2 не вернулся).
+- `src/probes/http.rs`, `src/probes/tcp.rs` — принимают `Route`.
+- `src/verdict.rs` — вердикты `l4_drop`, `geo_block_by_service`; `DiffKind` (both_ok / path_block / service_block / unknown), `diff()`, `apply_diff()`; правило payload после HTTP; сравнение DNS убрано из `facts()`.
+- `src/report.rs` — секции payload, QUIC, туннель и дифф-таблица; `RunReport.tunnel`; новые примечания.
+- `src/main.rs` — `--timeout <сек>` (дефолт 5, 1..=120), `--socks5 <addr>`, payload и QUIC в прямом прогоне, `run_tunnel()` на адресах прямого прогона, дифф после туннельного прогона.
+- `AGENTS.md` — структура, статус этапа 3, грабли этапа 3.
+
+**Проверено.**
+- `cargo fmt --check` — чисто; `cargo clippy --all-targets -- -D warnings` — чисто; `cargo test` — 143 теста, все зелёные.
+- `oko probe --all` (49 с): youtube/discord/x/facebook → `dpi_sni`, github/wikipedia → `ok`; payload на dpi_sni-целях — честная N/A, на github — 69.7 КБ полностью.
+- `oko probe --all --socks5 127.0.0.1:10808` (60 с, живой туннель xray): youtube/discord/x/facebook — direct `dpi_sni`, tunnel `ok` → `path_block`; github/wikipedia — `both_ok`. Дифф-таблица честная.
+- `oko probe --all --timeout 2` — 25 с вместо 49 с.
+- `--json` несёт `payload`, `quic`, `tunnel`, `diff`; `note` у `Ended` сериализуется только когда есть.
+- QUIC: youtube/discord/x отвечают Version Negotiation (67/49/68 мс), github/facebook/wikipedia молчат 5 с → `unknown`.
+
+**Найдено по ходу.**
+- Баг payload-пробы: `read_tls` отказывается принимать записи, когда буфер plaintext держит больше 16 КБ, а 16-КБ чанк расшифровывается в чуть больше — github.com через туннель обрывался на 53.7 КБ с «received plaintext buffer full». Исправлено: `feed()` дренирует plaintext после каждой записи.
+- youtube.com через туннель отдаёт 301 и следом 19-байтную TLS-запись, которую не расшифровывает ни rustls, ни OpenSSL (`openssl s_client -msg`, Python `ssl` — оба `bad_record_mac`). Это внешняя особенность пути, не наш баг; теперь такой обрыв после полного ответа — `Ended` с пометкой, а не `Failed`, и дифф youtube даёт `path_block`, а не «не сравнимо».
+
+**Не сделано (по брифу — следующие этапы).** GUI на Slint (этап 4), README/CI/SECURITY.md (этап 5). Отдельного `tunnel.rs` нет: SOCKS5-транспорт — в `route.rs`, прогон — `run_tunnel()` в `main.rs`, дифф — в `verdict.rs`.

@@ -8,28 +8,27 @@ mod format;
 mod json;
 mod probes;
 mod report;
+mod route;
 mod target;
 mod verdict;
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
-use probes::{dns, http, tcp, tls};
-use report::{ControlReport, RunReport, TargetReport};
+use probes::dns::IpSource;
+use probes::payload::PayloadProbe;
+use probes::tls::TlsOutcome;
+use probes::{dns, http, payload, quic, tcp, tls};
+use report::{ControlReport, RunReport, TargetReport, TunnelRun};
+use route::Route;
 use target::{Role, Target};
 use verdict::VerdictInput;
 
-/// How long one DNS exchange may take.
-const DNS_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long one TCP connect may take.
-const TCP_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long one TLS handshake may take.
-const TLS_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long one HTTP exchange may take.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+/// The default for `--timeout`: how long one probe may take.
+const DEFAULT_TIMEOUT_SECS: u64 = 5;
 /// The HTTP probe speaks plain HTTP, which lives on 80 whatever port the
 /// service uses for TLS.
 const HTTP_PORT: u16 = 80;
@@ -41,8 +40,12 @@ const HTTP_PORT: u16 = 80;
     about = "Detect and classify DNS, DPI and IP-level blocking of online services",
     long_about = "Oko probes a service from your network and reports what it observed: what the system \
                   resolver answered, what public DoH references answered, whether a TCP connection \
-                  opens, whether a TLS handshake with the real name reaches the server, and whether a \
-                  plain HTTP request with the real Host header survives.\n\n\
+                  opens, whether a TLS handshake with the real name reaches the server, whether a \
+                  plain HTTP request with the real Host header survives, how much of the body arrives \
+                  before the connection ends, and whether the server answers QUIC on UDP 443.\n\n\
+                  With --socks5 the same probes run through a SOCKS5 proxy and the report compares the \
+                  two paths: a service that fails directly and works through the tunnel is blocked on \
+                  the path, one that fails on both is refusing this network itself.\n\n\
                   Oko measures and classifies. It does not circumvent blocking."
 )]
 struct Cli {
@@ -72,6 +75,17 @@ struct ProbeArgs {
     /// Print the report as JSON instead of text.
     #[arg(long)]
     json: bool,
+    /// How long one probe may take, in seconds.
+    #[arg(
+        long,
+        value_name = "SECS",
+        default_value_t = DEFAULT_TIMEOUT_SECS,
+        value_parser = clap::value_parser!(u64).range(1..=120)
+    )]
+    timeout: u64,
+    /// Run the same probes through a SOCKS5 proxy and compare the two paths.
+    #[arg(long, value_name = "ADDR")]
+    socks5: Option<SocketAddr>,
 }
 
 #[tokio::main]
@@ -83,6 +97,9 @@ async fn main() -> ExitCode {
 }
 
 async fn probe_command(args: ProbeArgs) -> ExitCode {
+    let timeout = Duration::from_secs(args.timeout);
+    let route = Route::Direct;
+
     let targets = if args.all {
         target::builtin()
             .into_iter()
@@ -101,7 +118,7 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
     // The control runs first. If it cannot be reached, everything after it is
     // unreadable, and the report says so instead of blaming the services.
     let control = target::control();
-    let control_report = probe_control(&control).await;
+    let control_report = probe_control(&control, route, timeout).await;
     let control_alive = control_report.tcp.iter().any(|probe| probe.outcome.is_connected());
 
     // DNS for every target before anything else: the verdict engine needs the
@@ -109,7 +126,7 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
     // services.
     let mut dns_results = Vec::with_capacity(targets.len());
     for target in &targets {
-        dns_results.push(dns::probe(&target.domain, DNS_TIMEOUT).await);
+        dns_results.push(dns::probe(&target.domain, timeout).await);
     }
     let system_pool: Vec<(String, Vec<IpAddr>)> = dns_results
         .iter()
@@ -121,17 +138,36 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
     let mut reports = Vec::with_capacity(targets.len());
     for (target, dns) in targets.iter().zip(dns_results) {
         let (ips, source) = dns.addresses_for_tcp(&target.known_ips);
-        let tcp = tcp::probe_all(&target.domain, &ips, target.port, source, TCP_TIMEOUT).await;
+        let tcp = tcp::probe_all(&target.domain, &ips, target.port, source, timeout, route).await;
 
-        // The TLS and HTTP probes need one address: the one the TCP probe
-        // reached, IPv4 first.
+        // The later probes need one address: the one the TCP probe reached,
+        // IPv4 first.
         let address = verdict::pick_address(&tcp);
         let tls = match address {
-            Some(ip) => Some(tls::probe(&target.domain, ip, target.port, &control.domain, TLS_TIMEOUT).await),
+            Some(ip) => Some(tls::probe(&target.domain, ip, target.port, &control.domain, timeout, route).await),
             None => None,
         };
         let http = match address {
-            Some(ip) => Some(http::probe(&target.domain, ip, HTTP_PORT, &control.domain, HTTP_TIMEOUT).await),
+            Some(ip) => Some(http::probe(&target.domain, ip, HTTP_PORT, &control.domain, timeout, route).await),
+            None => None,
+        };
+        // The payload probe needs a completed handshake to speak over. When the
+        // handshake did not complete, the report says so instead of waiting out
+        // another timeout.
+        let payload = match (address, &tls) {
+            (Some(ip), Some(tls)) if matches!(tls.real.outcome, TlsOutcome::Ok { .. }) => {
+                Some(payload::probe(&target.domain, ip, target.port, timeout, route).await)
+            }
+            (Some(ip), _) => Some(PayloadProbe::not_attempted(
+                &target.domain,
+                ip,
+                target.port,
+                "the TLS handshake did not complete",
+            )),
+            (None, _) => None,
+        };
+        let quic = match address {
+            Some(ip) => Some(quic::probe(&target.domain, ip, target.port, timeout).await),
             None => None,
         };
 
@@ -141,6 +177,7 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
             tcp: &tcp,
             tls: tls.as_ref(),
             http: http.as_ref(),
+            payload: payload.as_ref(),
             control_alive,
             system_pool: &system_pool,
         });
@@ -152,7 +189,24 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
             tcp,
             tls,
             http,
+            payload,
+            quic,
+            diff: None,
         });
+    }
+
+    // The tunnel run repeats the probes through the proxy and the diff says
+    // what the two paths mean together.
+    let tunnel = match args.socks5 {
+        Some(proxy) => Some(run_tunnel(&targets, &reports, &control, proxy, timeout).await),
+        None => None,
+    };
+    if let Some(tunnel) = &tunnel {
+        for (direct, through) in reports.iter_mut().zip(&tunnel.targets) {
+            let diff = verdict::diff(&direct.verdict, &through.verdict);
+            verdict::apply_diff(&mut direct.verdict, &diff);
+            direct.diff = Some(diff);
+        }
     }
 
     let report = RunReport {
@@ -161,6 +215,7 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
         generated_at: report::now_utc(),
         targets: reports,
         control: control_report,
+        tunnel,
     };
 
     if args.json {
@@ -179,12 +234,93 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
 
 /// The control only has to prove the network is alive, so it skips the DoH
 /// references and asks the system resolver alone.
-async fn probe_control(target: &Target) -> ControlReport {
+async fn probe_control(target: &Target, route: Route, timeout: Duration) -> ControlReport {
     let system = dns::system_lookup(&target.domain).await;
     let (ips, source) = dns::addresses_for_tcp(&system, &target.known_ips);
-    let tcp = tcp::probe_all(&target.domain, &ips, target.port, source, TCP_TIMEOUT).await;
+    let tcp = tcp::probe_all(&target.domain, &ips, target.port, source, timeout, route).await;
     ControlReport {
         target: target.clone(),
         tcp,
+    }
+}
+
+/// Repeat the probes through the proxy, on the addresses the direct run
+/// resolved: the two runs then differ in the path and in nothing else.
+async fn run_tunnel(
+    targets: &[Target],
+    direct: &[TargetReport],
+    control: &Target,
+    proxy: SocketAddr,
+    timeout: Duration,
+) -> TunnelRun {
+    let route = Route::Socks5(proxy);
+    let control_report = probe_control(control, route, timeout).await;
+    let control_alive = control_report.tcp.iter().any(|probe| probe.outcome.is_connected());
+
+    let mut reports = Vec::with_capacity(targets.len());
+    for (target, direct_report) in targets.iter().zip(direct) {
+        let Some(ip) = verdict::pick_address(&direct_report.tcp) else {
+            reports.push(TargetReport {
+                target: target.clone(),
+                verdict: verdict::unknown("the direct run found no address to try"),
+                dns: direct_report.dns.clone(),
+                tcp: Vec::new(),
+                tls: None,
+                http: None,
+                payload: None,
+                quic: None,
+                diff: None,
+            });
+            continue;
+        };
+
+        let source = direct_report
+            .tcp
+            .first()
+            .map(|probe| probe.source)
+            .unwrap_or(IpSource::Resolved);
+        let tcp = tcp::probe_all(&target.domain, &[ip], target.port, source, timeout, route).await;
+        let tls = Some(tls::probe(&target.domain, ip, target.port, &control.domain, timeout, route).await);
+        let http = Some(http::probe(&target.domain, ip, HTTP_PORT, &control.domain, timeout, route).await);
+        let payload = match &tls {
+            Some(tls) if matches!(tls.real.outcome, TlsOutcome::Ok { .. }) => {
+                Some(payload::probe(&target.domain, ip, target.port, timeout, route).await)
+            }
+            _ => Some(PayloadProbe::not_attempted(
+                &target.domain,
+                ip,
+                target.port,
+                "the TLS handshake did not complete",
+            )),
+        };
+
+        let verdict = verdict::classify(&VerdictInput {
+            target,
+            dns: &direct_report.dns,
+            tcp: &tcp,
+            tls: tls.as_ref(),
+            http: http.as_ref(),
+            payload: payload.as_ref(),
+            control_alive,
+            system_pool: &[],
+        });
+
+        reports.push(TargetReport {
+            target: target.clone(),
+            verdict,
+            dns: direct_report.dns.clone(),
+            tcp,
+            tls,
+            http,
+            payload,
+            quic: None,
+            diff: None,
+        });
+    }
+
+    TunnelRun {
+        proxy,
+        control: control_report,
+        targets: reports,
     }
 }

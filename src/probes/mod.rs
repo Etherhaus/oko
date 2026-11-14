@@ -7,5 +7,7 @@
 
 pub mod dns;
 pub mod http;
+pub mod payload;
+pub mod quic;
 pub mod tcp;
 pub mod tls;

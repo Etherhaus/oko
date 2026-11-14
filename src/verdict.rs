@@ -13,8 +13,9 @@ use std::net::IpAddr;
 use serde::Serialize;
 
 use crate::format;
-use crate::probes::dns::{Comparison, DnsProbe, IpSource};
+use crate::probes::dns::{DnsProbe, IpSource};
 use crate::probes::http::HttpProbe;
+use crate::probes::payload::{PayloadOutcome, PayloadProbe};
 use crate::probes::tcp::{TcpOutcome, TcpProbe};
 use crate::probes::tls::{TlsOutcome, TlsProbe};
 use crate::target::Target;
@@ -36,6 +37,12 @@ pub enum VerdictKind {
     /// The request died on the real `Host` header and the same address answered
     /// a known-good one.
     HostFilter,
+    /// The body stopped inside a known l4-25 range with the response still
+    /// incomplete.
+    L4Drop,
+    /// The service is unreachable on both paths, so the service itself refuses
+    /// this network.
+    GeoBlockByService,
     /// The evidence does not add up to any of the above. Always carries a
     /// reason.
     Unknown,
@@ -49,6 +56,8 @@ impl VerdictKind {
             VerdictKind::DpiSni => "dpi_sni",
             VerdictKind::IpBlock => "ip_block",
             VerdictKind::HostFilter => "host_filter",
+            VerdictKind::L4Drop => "l4_drop",
+            VerdictKind::GeoBlockByService => "geo_block_by_service",
             VerdictKind::Unknown => "unknown",
         }
     }
@@ -57,7 +66,12 @@ impl VerdictKind {
     pub fn default_level(self) -> Level {
         match self {
             VerdictKind::Ok => Level::Ok,
-            VerdictKind::DnsSpoof | VerdictKind::DpiSni | VerdictKind::IpBlock | VerdictKind::HostFilter => Level::Bad,
+            VerdictKind::DnsSpoof
+            | VerdictKind::DpiSni
+            | VerdictKind::IpBlock
+            | VerdictKind::HostFilter
+            | VerdictKind::L4Drop
+            | VerdictKind::GeoBlockByService => Level::Bad,
             VerdictKind::Unknown => Level::Undetermined,
         }
     }
@@ -118,6 +132,8 @@ pub struct VerdictInput<'a> {
     pub tcp: &'a [TcpProbe],
     pub tls: Option<&'a TlsProbe>,
     pub http: Option<&'a HttpProbe>,
+    /// The payload probe, when one ran.
+    pub payload: Option<&'a PayloadProbe>,
     /// Whether the control target answered at all.
     pub control_alive: bool,
     /// The system resolver's answer for every domain in the run, so a sinkhole
@@ -226,7 +242,64 @@ pub fn classify(input: &VerdictInput<'_>) -> Verdict {
         );
     }
 
-    // 6. Everything passed.
+    // 6. Payload: did the body survive the l4-25 ranges?
+    if let Some(payload) = input.payload {
+        match &payload.outcome {
+            PayloadOutcome::KbDrop { body, total, range, .. } => {
+                return make(
+                    VerdictKind::L4Drop,
+                    Level::Bad,
+                    format!(
+                        "the body ended after {} ({} with the handshake), inside the {} range",
+                        format::kilobytes(*body),
+                        format::kilobytes(*total),
+                        range.describe()
+                    ),
+                );
+            }
+            PayloadOutcome::Truncated {
+                body, total, detail, ..
+            } => {
+                return make(
+                    VerdictKind::Unknown,
+                    Level::Undetermined,
+                    format!(
+                        "the body ended after {} ({} with the handshake), outside the known l4-25 ranges: {detail}",
+                        format::kilobytes(*body),
+                        format::kilobytes(*total)
+                    ),
+                );
+            }
+            PayloadOutcome::Stalled { body, total, .. } => {
+                return make(
+                    VerdictKind::Unknown,
+                    Level::Undetermined,
+                    format!(
+                        "the body stopped after {} ({} with the handshake) and nothing more arrived",
+                        format::kilobytes(*body),
+                        format::kilobytes(*total)
+                    ),
+                );
+            }
+            PayloadOutcome::NotAttempted { reason } => {
+                return make(
+                    VerdictKind::Unknown,
+                    Level::Undetermined,
+                    format!("the payload probe did not run: {reason}"),
+                );
+            }
+            PayloadOutcome::Failed { reason, .. } => {
+                return make(
+                    VerdictKind::Unknown,
+                    Level::Undetermined,
+                    format!("the payload probe could not run: {reason}"),
+                );
+            }
+            PayloadOutcome::Complete { .. } | PayloadOutcome::Ended { .. } => {}
+        }
+    }
+
+    // 7. Everything passed.
     match tls_caveat(tls) {
         Some(caveat) => make(
             VerdictKind::Ok,
@@ -331,15 +404,8 @@ fn facts(input: &VerdictInput<'_>) -> Vec<String> {
     for answer in &input.dns.doh {
         facts.push(format!("DoH {}: {}", answer.reference, answer.outcome.describe()));
     }
-    facts.push(match &input.dns.comparison {
-        Comparison::Identical => "the system resolver and the DoH references agree".to_string(),
-        Comparison::Differ { .. } => {
-            "the system resolver and the DoH references returned different addresses".to_string()
-        }
-        Comparison::Incomplete => {
-            "at least one resolver gave no answer, so the DNS answers cannot be compared".to_string()
-        }
-    });
+    // The comparison itself stays in the DNS section and in the JSON: it is a
+    // detail, not a fact the verdict rests on.
 
     for probe in input.tcp {
         facts.push(format!("TCP {}: {}", probe.label(), probe.outcome.describe()));
@@ -371,6 +437,10 @@ fn facts(input: &VerdictInput<'_>) -> Vec<String> {
         }
     }
 
+    if let Some(payload) = input.payload {
+        facts.push(format!("payload: {}", payload.outcome.describe()));
+    }
+
     facts
 }
 
@@ -383,11 +453,115 @@ pub fn pick_address(tcp: &[TcpProbe]) -> Option<IpAddr> {
         .map(|probe| probe.ip)
 }
 
+/// A verdict that says nothing, with the reason it says nothing.
+pub fn unknown(reason: impl Into<String>) -> Verdict {
+    Verdict {
+        kind: VerdictKind::Unknown,
+        level: Level::Undetermined,
+        reason: reason.into(),
+        facts: Vec::new(),
+        address_source: None,
+    }
+}
+
+/// What the direct and the tunnel run say together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffKind {
+    /// Both paths reached the service.
+    BothOk,
+    /// The direct path is blocked and the tunnel works: the block is on the
+    /// path.
+    PathBlock,
+    /// Both paths are blocked: the service itself refuses this network.
+    ServiceBlock,
+    /// The two runs cannot be compared.
+    Unknown,
+}
+
+impl DiffKind {
+    /// The conclusion in the words the diff table uses.
+    pub fn describe(self) -> &'static str {
+        match self {
+            DiffKind::BothOk => "both paths work",
+            DiffKind::PathBlock => "blocked on the path",
+            DiffKind::ServiceBlock => "blocked by the service",
+            DiffKind::Unknown => "cannot be compared",
+        }
+    }
+}
+
+/// The comparison of the two runs for one target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Diff {
+    pub kind: DiffKind,
+    /// The verdict the direct run reached, before the diff was applied.
+    pub direct: VerdictKind,
+    /// The verdict the tunnel run reached.
+    pub tunnel: VerdictKind,
+    pub reason: String,
+}
+
+/// Compare the two runs.
+///
+/// The tunnel run reuses the addresses the direct run resolved, so a spoofed
+/// DNS answer poisons both and the comparison says nothing. That is why a
+/// direct `dns_spoof` is never turned into a path block.
+pub fn diff(direct: &Verdict, tunnel: &Verdict) -> Diff {
+    let make = |kind: DiffKind, reason: &str| Diff {
+        kind,
+        direct: direct.kind,
+        tunnel: tunnel.kind,
+        reason: reason.to_string(),
+    };
+
+    if direct.kind == VerdictKind::DnsSpoof {
+        return make(
+            DiffKind::Unknown,
+            "the direct run's DNS answer is not trustworthy, so the two runs cannot be compared",
+        );
+    }
+    if direct.kind == VerdictKind::Unknown || tunnel.kind == VerdictKind::Unknown {
+        return make(
+            DiffKind::Unknown,
+            "one of the runs could not tell, so the two cannot be compared",
+        );
+    }
+    match (direct.kind, tunnel.kind) {
+        (VerdictKind::Ok, VerdictKind::Ok) => make(DiffKind::BothOk, "both paths reached the service"),
+        (_, VerdictKind::Ok) => make(
+            DiffKind::PathBlock,
+            "the service works through the tunnel and not directly, so the block is on this path",
+        ),
+        (VerdictKind::Ok, _) => make(
+            DiffKind::Unknown,
+            "the direct path works and the tunnel does not, so the tunnel is the problem, not the service",
+        ),
+        _ => make(
+            DiffKind::ServiceBlock,
+            "the service is unreachable directly and through the tunnel, so the block is not on this path",
+        ),
+    }
+}
+
+/// A service that fails on both paths is blocked by the service itself, not by
+/// this network.
+pub fn apply_diff(verdict: &mut Verdict, diff: &Diff) {
+    if diff.kind == DiffKind::ServiceBlock {
+        verdict.kind = VerdictKind::GeoBlockByService;
+        verdict.level = Level::Bad;
+        verdict.reason =
+            "the service is unreachable both directly and through the tunnel, so the block is not on this path"
+                .to_string();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::probes::dns::{DohAnswer, Rcode, ResolveFailure, ResolveOutcome, compare};
     use crate::probes::http::{HttpAttempt, HttpOutcome};
+    use crate::probes::payload::{DropRange, PayloadOutcome, PayloadProbe};
     use crate::probes::tls::TlsAttempt;
     use crate::target::Role;
     use std::time::Duration;
@@ -558,6 +732,7 @@ mod tests {
             tcp,
             tls,
             http,
+            payload: None,
             control_alive: true,
             system_pool: &[],
         }
@@ -901,8 +1076,198 @@ mod tests {
     fn a_verdict_kind_carries_its_default_level() {
         assert_eq!(VerdictKind::Ok.default_level(), Level::Ok);
         assert_eq!(VerdictKind::DpiSni.default_level(), Level::Bad);
+        assert_eq!(VerdictKind::L4Drop.default_level(), Level::Bad);
+        assert_eq!(VerdictKind::GeoBlockByService.default_level(), Level::Bad);
         assert_eq!(VerdictKind::Unknown.default_level(), Level::Undetermined);
         assert_eq!(VerdictKind::DnsSpoof.as_str(), "dns_spoof");
+        assert_eq!(VerdictKind::L4Drop.as_str(), "l4_drop");
+        assert_eq!(VerdictKind::GeoBlockByService.as_str(), "geo_block_by_service");
         assert_eq!(Level::Undetermined.as_str(), "undetermined");
+    }
+
+    fn payload(outcome: PayloadOutcome) -> PayloadProbe {
+        PayloadProbe {
+            domain: "github.com".to_string(),
+            ip: ip("140.82.121.4"),
+            port: 443,
+            outcome,
+        }
+    }
+
+    fn verdict(kind: VerdictKind) -> Verdict {
+        Verdict {
+            kind,
+            level: kind.default_level(),
+            reason: String::new(),
+            facts: Vec::new(),
+            address_source: None,
+        }
+    }
+
+    fn passing_input<'a>(
+        target: &'a Target,
+        dns: &'a DnsProbe,
+        tcp: &'a [TcpProbe],
+        tls: &'a TlsProbe,
+        http: &'a HttpProbe,
+        payload: &'a PayloadProbe,
+    ) -> VerdictInput<'a> {
+        let mut input = input(target, dns, tcp, Some(tls), Some(http));
+        input.payload = Some(payload);
+        input
+    }
+
+    #[test]
+    fn a_body_that_stops_in_the_sixteen_range_is_l4_drop() {
+        let target = target("github.com");
+        let dns = dns_probe(
+            "github.com",
+            resolved(&["140.82.121.4"]),
+            vec![doh_answer("dns.google", &["140.82.121.4"])],
+        );
+        let tcp = [connected("140.82.121.4")];
+        let tls = tls_ok("github.com");
+        let http = http_ok("github.com");
+        let payload = payload(PayloadOutcome::KbDrop {
+            body: 17 * 1024,
+            total: 22 * 1024,
+            range: DropRange::SixteenToTwenty,
+            elapsed: Duration::from_millis(900),
+        });
+
+        let verdict = classify(&passing_input(&target, &dns, &tcp, &tls, &http, &payload));
+        assert_eq!(verdict.kind, VerdictKind::L4Drop);
+        assert_eq!(verdict.level, Level::Bad);
+        assert!(verdict.reason.contains("16–20 KB"), "{}", verdict.reason);
+    }
+
+    #[test]
+    fn a_body_that_stops_outside_the_ranges_is_unknown() {
+        let target = target("github.com");
+        let dns = dns_probe(
+            "github.com",
+            resolved(&["140.82.121.4"]),
+            vec![doh_answer("dns.google", &["140.82.121.4"])],
+        );
+        let tcp = [connected("140.82.121.4")];
+        let tls = tls_ok("github.com");
+        let http = http_ok("github.com");
+        let payload = payload(PayloadOutcome::Truncated {
+            body: 30 * 1024,
+            total: 35 * 1024,
+            detail: "reset".to_string(),
+            elapsed: Duration::from_millis(700),
+        });
+
+        let verdict = classify(&passing_input(&target, &dns, &tcp, &tls, &http, &payload));
+        assert_eq!(verdict.kind, VerdictKind::Unknown);
+        assert!(verdict.reason.contains("outside the known"), "{}", verdict.reason);
+    }
+
+    #[test]
+    fn a_stalled_body_is_unknown() {
+        let target = target("github.com");
+        let dns = dns_probe(
+            "github.com",
+            resolved(&["140.82.121.4"]),
+            vec![doh_answer("dns.google", &["140.82.121.4"])],
+        );
+        let tcp = [connected("140.82.121.4")];
+        let tls = tls_ok("github.com");
+        let http = http_ok("github.com");
+        let payload = payload(PayloadOutcome::Stalled {
+            body: 8 * 1024,
+            total: 13 * 1024,
+            elapsed: Duration::from_millis(5_000),
+        });
+
+        let verdict = classify(&passing_input(&target, &dns, &tcp, &tls, &http, &payload));
+        assert_eq!(verdict.kind, VerdictKind::Unknown);
+        assert!(verdict.reason.contains("nothing more arrived"), "{}", verdict.reason);
+    }
+
+    #[test]
+    fn a_payload_probe_that_did_not_run_is_unknown() {
+        let target = target("github.com");
+        let dns = dns_probe(
+            "github.com",
+            resolved(&["140.82.121.4"]),
+            vec![doh_answer("dns.google", &["140.82.121.4"])],
+        );
+        let tcp = [connected("140.82.121.4")];
+        let tls = tls_ok("github.com");
+        let http = http_ok("github.com");
+        let payload = PayloadProbe::not_attempted("github.com", ip("140.82.121.4"), 443, "the handshake was killed");
+
+        let verdict = classify(&passing_input(&target, &dns, &tcp, &tls, &http, &payload));
+        assert_eq!(verdict.kind, VerdictKind::Unknown);
+        assert!(verdict.reason.contains("did not run"), "{}", verdict.reason);
+    }
+
+    #[test]
+    fn a_service_that_fails_on_both_paths_is_geo_block_by_service() {
+        let direct = verdict(VerdictKind::DpiSni);
+        let tunnel = verdict(VerdictKind::DpiSni);
+        let diff = diff(&direct, &tunnel);
+        assert_eq!(diff.kind, DiffKind::ServiceBlock);
+
+        let mut direct = direct;
+        apply_diff(&mut direct, &diff);
+        assert_eq!(direct.kind, VerdictKind::GeoBlockByService);
+        assert_eq!(direct.level, Level::Bad);
+        assert!(
+            direct.reason.contains("both directly and through the tunnel"),
+            "{}",
+            direct.reason
+        );
+    }
+
+    #[test]
+    fn a_service_that_works_through_the_tunnel_is_a_path_block() {
+        let direct = verdict(VerdictKind::DpiSni);
+        let tunnel = verdict(VerdictKind::Ok);
+        let diff = diff(&direct, &tunnel);
+        assert_eq!(diff.kind, DiffKind::PathBlock);
+        assert_eq!(diff.direct, VerdictKind::DpiSni);
+        assert_eq!(diff.tunnel, VerdictKind::Ok);
+        assert!(diff.reason.contains("on this path"), "{}", diff.reason);
+    }
+
+    #[test]
+    fn both_paths_working_is_not_a_diff() {
+        let diff = diff(&verdict(VerdictKind::Ok), &verdict(VerdictKind::Ok));
+        assert_eq!(diff.kind, DiffKind::BothOk);
+    }
+
+    #[test]
+    fn a_direct_dns_spoof_cannot_be_compared() {
+        let diff = diff(&verdict(VerdictKind::DnsSpoof), &verdict(VerdictKind::Ok));
+        assert_eq!(diff.kind, DiffKind::Unknown);
+        assert!(diff.reason.contains("DNS"), "{}", diff.reason);
+    }
+
+    #[test]
+    fn a_tunnel_that_is_worse_than_the_direct_path_is_not_a_service_block() {
+        let diff = diff(&verdict(VerdictKind::Ok), &verdict(VerdictKind::DpiSni));
+        assert_eq!(diff.kind, DiffKind::Unknown);
+        assert!(diff.reason.contains("tunnel is the problem"), "{}", diff.reason);
+    }
+
+    #[test]
+    fn the_facts_no_longer_carry_the_dns_comparison() {
+        let target = target("github.com");
+        let dns = dns_probe(
+            "github.com",
+            resolved(&["140.82.121.4"]),
+            vec![doh_answer("dns.google", &["140.82.121.5"])],
+        );
+        let tcp = [connected("140.82.121.4")];
+        let tls = tls_ok("github.com");
+        let http = http_ok("github.com");
+
+        let verdict = classify(&input(&target, &dns, &tcp, Some(&tls), Some(&http)));
+        let facts = verdict.facts.join("\n");
+        assert!(!facts.contains("different addresses"), "{facts}");
+        assert!(facts.contains("system resolver:"), "{facts}");
     }
 }

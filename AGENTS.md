@@ -17,14 +17,18 @@
 - `src/probes/tcp.rs` — connect с таймаутом и таймингом.
 - `src/probes/tls.rs` — rustls-рукопожатие с настоящим SNI, при неудаче — с контрольным на том же IP; классификация по факту ответа сервера, не по сертификату.
 - `src/probes/http.rs` — plain HTTP/1.1 GET с настоящим `Host`, при неудаче — с контрольным.
-- `src/verdict.rs` — движок вердиктов: `VerdictKind`, `Level`, `classify()`, `pick_address()`; юнит-тесты на моках, без сети.
-- `src/report.rs` — текстовый и JSON-отчёт (`--json`).
+- `src/probes/payload.rs` — после рукопожатия читает тело до 64 КБ и фиксирует, где оборвалось; обрыв в 16–20 КБ или ~25 КБ при неполном ответе — `KbDrop`.
+- `src/probes/quic.rs` — исследовательская UDP-проба: 1200-байтный Initial с grease-версией; явный ответ сервера (Version Negotiation) — факт, тишина — `unknown`.
+- `src/route.rs` — транспорт пробы: `Route::Direct` или `Route::Socks5`; SOCKS5 no-auth handshake и CONNECT, парсеры ответов с тестами.
+- `src/verdict.rs` — движок вердиктов: `VerdictKind`, `Level`, `classify()`, `pick_address()`, `diff()`/`apply_diff()`; юнит-тесты на моках, без сети.
+- `src/report.rs` — текстовый и JSON-отчёт (`--json`), секции payload/QUIC/туннель-дифф.
 - `src/format.rs`, `src/json.rs` — форматирование длительностей и адресов, сериализация `Duration` в миллисекундах.
-- Дальше по плану: `probes/payload.rs`, `probes/quic.rs`, `tunnel.rs` (этап 3), `ui/` (этап 4).
+- `src/main.rs` — CLI и оркестрация: прямой прогон, `run_tunnel()` (те же пробы через `Route::Socks5` на адресах прямого прогона), применение диффа.
+- Дальше по плану: `ui/` (этап 4).
 
 **Команды.**
 - Сборка: `cargo build`; релиз — `cargo build --release`.
-- Запуск: `cargo run -- probe github.com`, `cargo run -- probe --all`.
+- Запуск: `cargo run -- probe github.com`, `cargo run -- probe --all`, `cargo run -- probe --all --socks5 127.0.0.1:1080`; `--timeout <сек>` (дефолт 5, 1..=120) — бюджет одной пробы.
 - Проверки: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
 
 **Конвенции.**
@@ -49,7 +53,7 @@
 |---|---|---|
 | 1 | Каркас + DNS/TCP-пробы, сырой отчёт, без вердиктов | сделан |
 | 2 | TLS + HTTP-пробы, движок вердиктов, `--json` | сделан |
-| 3 | l4-25, QUIC/UDP, туннель-дифф, `--socks5` | не начат |
+| 3 | l4-25, QUIC/UDP, туннель-дифф, `--socks5` | сделан |
 | 4 | GUI на Slint, темы, i18n RU/EN | не начат |
 | 5 | README EN/RU, CI, SECURITY.md, упаковка | не начат |
 
@@ -65,5 +69,14 @@
 - На ТСПУ настоящий SNI чаще уходит в тишину (timeout), а не в RST. `RstAfterClientHello` и `Timeout` — оба «сервер не ответил», вердикт один.
 - Порядок правил в `classify()` важен: мёртвый контроль → `unknown` первым; дальше DNS, `ip_block`, TLS, HTTP, и только потом `ok`.
 - Живая картина на 2026-11-14 (подтверждена независимо через `openssl s_client`): youtube.com, discord.com, x.com, facebook.com → `dpi_sni`; github.com, wikipedia.org → `ok`.
+
+**Грабли, найденные на этапе 3** (не переоткрывать заново):
+- `rustls::Connection::read_tls` отказывается принимать записи, когда его буфер открытого текста держит больше 16 КБ (`DEFAULT_RECEIVED_PLAINTEXT_LIMIT`), а один 16-КБ чанк расшифровывается в чуть больше. Поэтому `feed()` дренирует plaintext после каждой записи, а не только между чтениями сокета. Живой баг: github.com через туннель обрывался на 53.7 КБ с «received plaintext buffer full».
+- Обрыв TLS-записи (`DecryptError`) — это конец потока, а не провал пробы: если ответ уже полный, исход `Ended` с пометкой, как поток закончился; `Failed` — только когда не прочитано ничего. Живой случай: youtube.com через туннель отдаёт 301 и следом 19-байтную запись, которую не расшифровывает ни rustls, ни OpenSSL (проверено `openssl s_client -msg` и Python `ssl`) — внешняя особенность, не наш баг.
+- l4-25 считается и по телу, и по телу+рукопожатию: middlebox считает весь поток, бриф называет тело.
+- На dpi_sni-целях payload-проба не запускается вовсе (`NotAttempted`, «рукопожатие не завершилось») — это честная N/A, не таймаут.
+- QUIC-проба: Initial с grease-версией `0x1a2a3a4a`; Version Negotiation — единственный явный ответ. Тишина = `unknown`: UDP может молчать легитимно (NAT, провайдер).
+- Туннельный прогон берёт адреса прямого прогона: иначе два прогона отличались бы и путём, и адресом. Следствие: подменённый DNS отравляет оба прогона, и дифф ничего не говорит — это написано в примечаниях отчёта.
+- Живая картина на 2026-11-14 через туннель `127.0.0.1:10808` (xray): youtube/discord/x/facebook — direct `dpi_sni`, tunnel `ok` → `path_block`; github/wikipedia — `ok` на обоих путях. QUIC: youtube/discord/x отвечают Version Negotiation, github/facebook/wikipedia молчат.
 
 **Скиллы проекта.** нет.

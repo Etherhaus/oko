@@ -10,11 +10,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 
 use super::dns::IpSource;
 use crate::format;
+use crate::route::Route;
 
 /// How many addresses of one target to try. A CDN can return a dozen; trying
 /// every one of them turns a probe into a scan.
@@ -105,11 +105,18 @@ impl TcpProbe {
 }
 
 /// Try every address, up to [`MAX_ADDRESSES_PER_TARGET`], at once.
-pub async fn probe_all(domain: &str, ips: &[IpAddr], port: u16, source: IpSource, timeout: Duration) -> Vec<TcpProbe> {
+pub async fn probe_all(
+    domain: &str,
+    ips: &[IpAddr],
+    port: u16,
+    source: IpSource,
+    timeout: Duration,
+    route: Route,
+) -> Vec<TcpProbe> {
     let mut set = JoinSet::new();
     for ip in ips.iter().take(MAX_ADDRESSES_PER_TARGET).copied() {
         let domain = domain.to_string();
-        set.spawn(async move { probe(&domain, ip, port, source, timeout).await });
+        set.spawn(async move { probe(&domain, ip, port, source, timeout, route).await });
     }
 
     let mut probes = Vec::new();
@@ -124,11 +131,11 @@ pub async fn probe_all(domain: &str, ips: &[IpAddr], port: u16, source: IpSource
 
 /// One connect attempt to `ip:port`. The socket is closed as soon as it opens:
 /// this probe measures reachability, not a session.
-pub async fn probe(domain: &str, ip: IpAddr, port: u16, source: IpSource, timeout: Duration) -> TcpProbe {
+pub async fn probe(domain: &str, ip: IpAddr, port: u16, source: IpSource, timeout: Duration, route: Route) -> TcpProbe {
     let started = Instant::now();
     let addr = SocketAddr::new(ip, port);
 
-    let outcome = match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
+    let outcome = match tokio::time::timeout(timeout, route.connect(addr, timeout)).await {
         Ok(Ok(stream)) => {
             let elapsed = started.elapsed();
             drop(stream);
@@ -223,7 +230,15 @@ mod tests {
 
     #[tokio::test]
     async fn probing_no_addresses_yields_no_probes() {
-        let probes = probe_all("github.com", &[], 443, IpSource::Resolved, Duration::from_millis(50)).await;
+        let probes = probe_all(
+            "github.com",
+            &[],
+            443,
+            IpSource::Resolved,
+            Duration::from_millis(50),
+            Route::Direct,
+        )
+        .await;
         assert!(probes.is_empty());
     }
 
@@ -238,6 +253,7 @@ mod tests {
             1,
             IpSource::Resolved,
             Duration::from_millis(200),
+            Route::Direct,
         )
         .await;
         assert_eq!(probes.len(), 1);

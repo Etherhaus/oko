@@ -6,17 +6,19 @@
 //! must not conclude.
 
 use std::fmt::Write as _;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
 use crate::probes::dns::{Comparison, DnsProbe, IpSource, ResolveOutcome};
 use crate::probes::http::HttpProbe;
+use crate::probes::payload::PayloadProbe;
+use crate::probes::quic::QuicProbe;
 use crate::probes::tcp::TcpProbe;
 use crate::probes::tls::TlsProbe;
 use crate::target::{KNOWN_IPS_RECORDED, Target};
-use crate::verdict::{Verdict, VerdictKind};
+use crate::verdict::{Diff, Verdict, VerdictKind};
 
 /// Everything one run produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -26,6 +28,8 @@ pub struct RunReport {
     pub generated_at: String,
     pub targets: Vec<TargetReport>,
     pub control: ControlReport,
+    /// The same probes through a SOCKS5 proxy, when one was asked for.
+    pub tunnel: Option<TunnelRun>,
 }
 
 /// The probes and the verdict for one service.
@@ -37,6 +41,10 @@ pub struct TargetReport {
     pub tcp: Vec<TcpProbe>,
     pub tls: Option<TlsProbe>,
     pub http: Option<HttpProbe>,
+    pub payload: Option<PayloadProbe>,
+    pub quic: Option<QuicProbe>,
+    /// The comparison with the tunnel run, when one ran.
+    pub diff: Option<Diff>,
 }
 
 /// The probes for the control target, which only has to prove the network is
@@ -45,6 +53,14 @@ pub struct TargetReport {
 pub struct ControlReport {
     pub target: Target,
     pub tcp: Vec<TcpProbe>,
+}
+
+/// The same probes through a SOCKS5 proxy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TunnelRun {
+    pub proxy: SocketAddr,
+    pub control: ControlReport,
+    pub targets: Vec<TargetReport>,
 }
 
 /// The current time as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -106,6 +122,14 @@ pub fn render(report: &RunReport) -> String {
             let _ = writeln!(out);
             render_http(&mut out, http);
         }
+        if let Some(payload) = &target.payload {
+            let _ = writeln!(out);
+            render_payload(&mut out, payload);
+        }
+        if let Some(quic) = &target.quic {
+            let _ = writeln!(out);
+            render_quic(&mut out, quic);
+        }
         if target.verdict.kind != VerdictKind::Ok {
             let _ = writeln!(out);
             render_facts(&mut out, &target.verdict);
@@ -121,6 +145,13 @@ pub fn render(report: &RunReport) -> String {
             out,
             "    note: the control target did not answer. The network is down or filtered as a whole, so the results above say nothing about the services."
         );
+    }
+
+    if let Some(tunnel) = &report.tunnel {
+        let _ = writeln!(out);
+        render_tunnel(&mut out, tunnel);
+        let _ = writeln!(out);
+        render_diff(&mut out, &report.targets);
     }
 
     let _ = writeln!(out);
@@ -221,6 +252,63 @@ fn render_http(out: &mut String, http: &HttpProbe) {
     }
 }
 
+fn render_payload(out: &mut String, payload: &PayloadProbe) {
+    let _ = writeln!(out, "  payload");
+    row(out, "body", &payload.outcome.describe());
+}
+
+fn render_quic(out: &mut String, quic: &QuicProbe) {
+    let _ = writeln!(out, "  QUIC");
+    row(out, "UDP 443", &quic.outcome.describe());
+    let _ = writeln!(out, "    note: {}", quic.outcome.note());
+}
+
+fn render_tunnel(out: &mut String, tunnel: &TunnelRun) {
+    let _ = writeln!(out, "tunnel {}", tunnel.proxy);
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  control {}", tunnel.control.target.label());
+    render_tcp(out, &tunnel.control.tcp);
+    if !tunnel.control.tcp.iter().any(|probe| probe.outcome.is_connected()) {
+        let _ = writeln!(
+            out,
+            "    note: the tunnel did not carry the control target, so the tunnel run says nothing about the services"
+        );
+    }
+
+    for target in &tunnel.targets {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  target {}", target.target.label());
+        render_verdict(out, &target.verdict);
+        let _ = writeln!(out);
+        render_tcp(out, &target.tcp);
+        if let Some(tls) = &target.tls {
+            let _ = writeln!(out);
+            render_tls(out, tls);
+        }
+        if let Some(http) = &target.http {
+            let _ = writeln!(out);
+            render_http(out, http);
+        }
+        if let Some(payload) = &target.payload {
+            let _ = writeln!(out);
+            render_payload(out, payload);
+        }
+    }
+}
+
+fn render_diff(out: &mut String, targets: &[TargetReport]) {
+    let _ = writeln!(out, "diff");
+    for target in targets {
+        let Some(diff) = &target.diff else {
+            continue;
+        };
+        let _ = writeln!(out, "  {}", target.target.label());
+        let _ = writeln!(out, "    direct  {}", diff.direct.as_str());
+        let _ = writeln!(out, "    tunnel  {}", diff.tunnel.as_str());
+        let _ = writeln!(out, "    result  {}: {}", diff.kind.describe(), diff.reason);
+    }
+}
+
 fn render_facts(out: &mut String, verdict: &Verdict) {
     let _ = writeln!(out, "  facts");
     for fact in &verdict.facts {
@@ -256,6 +344,23 @@ fn render_notes(out: &mut String) {
         out,
         "  - an address with no route from this host is never counted as a block"
     );
+    let _ = writeln!(
+        out,
+        "  - a body that ends inside 16–20 KB or around 25 KB with the response still incomplete"
+    );
+    let _ = writeln!(
+        out,
+        "    is the l4-25 signature; a complete response that ends there is not"
+    );
+    let _ = writeln!(
+        out,
+        "  - QUIC silence is not a verdict: a NAT or a provider may drop UDP legitimately"
+    );
+    let _ = writeln!(
+        out,
+        "  - the tunnel run reuses the addresses the direct run resolved, so a spoofed DNS"
+    );
+    let _ = writeln!(out, "    answer poisons both runs and the comparison says nothing");
 }
 
 /// One `label   value` line, indented under a section.
@@ -284,10 +389,12 @@ mod tests {
     use super::*;
     use crate::probes::dns::{DohAnswer, Rcode, ResolveFailure};
     use crate::probes::http::{HttpAttempt, HttpOutcome};
+    use crate::probes::payload::{DropRange, PayloadOutcome, PayloadProbe};
+    use crate::probes::quic::{QuicOutcome, QuicProbe};
     use crate::probes::tcp::TcpOutcome;
     use crate::probes::tls::TlsAttempt;
     use crate::target::{Role, ad_hoc};
-    use crate::verdict::Level;
+    use crate::verdict::{Diff, DiffKind, Level};
     use std::time::Duration;
 
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
@@ -354,6 +461,31 @@ mod tests {
         }
     }
 
+    fn payload_probe() -> PayloadProbe {
+        PayloadProbe {
+            domain: "github.com".to_string(),
+            ip: ip(140, 82, 121, 4),
+            port: 443,
+            outcome: PayloadOutcome::KbDrop {
+                body: 17 * 1024,
+                total: 22 * 1024,
+                range: DropRange::SixteenToTwenty,
+                elapsed: Duration::from_millis(900),
+            },
+        }
+    }
+
+    fn quic_probe() -> QuicProbe {
+        QuicProbe {
+            domain: "github.com".to_string(),
+            ip: ip(140, 82, 121, 4),
+            port: 443,
+            outcome: QuicOutcome::Silent {
+                elapsed: Duration::from_millis(5_000),
+            },
+        }
+    }
+
     fn report_with(comparison: Comparison, tcp: Vec<TcpProbe>) -> RunReport {
         RunReport {
             tool: "oko",
@@ -374,6 +506,9 @@ mod tests {
                 tcp,
                 tls: Some(tls_probe()),
                 http: Some(http_probe()),
+                payload: None,
+                quic: None,
+                diff: None,
             }],
             control: ControlReport {
                 target: Target {
@@ -384,6 +519,7 @@ mod tests {
                 },
                 tcp: vec![connected(ip(77, 88, 55, 88))],
             },
+            tunnel: None,
         }
     }
 
@@ -564,6 +700,82 @@ mod tests {
         );
         assert_eq!(parsed["targets"][0]["dns"]["comparison"], "identical");
         assert_eq!(parsed["control"]["target"]["domain"], "yandex.ru");
+    }
+
+    #[test]
+    fn a_payload_section_names_the_body_size() {
+        let mut report = report_with(Comparison::Identical, vec![connected(ip(140, 82, 121, 4))]);
+        report.targets[0].payload = Some(payload_probe());
+        let text = render(&report);
+        assert!(text.contains("  payload"), "{text}");
+        assert!(text.contains("inside the 16–20 KB range"), "{text}");
+    }
+
+    #[test]
+    fn a_quic_section_says_silence_is_not_a_verdict() {
+        let mut report = report_with(Comparison::Identical, vec![connected(ip(140, 82, 121, 4))]);
+        report.targets[0].quic = Some(quic_probe());
+        let text = render(&report);
+        assert!(text.contains("  QUIC"), "{text}");
+        assert!(text.contains("no answer (5.0 s)"), "{text}");
+        assert!(text.contains("not a verdict"), "{text}");
+    }
+
+    #[test]
+    fn a_tunnel_run_renders_the_diff_table() {
+        let mut report = report_with(Comparison::Identical, vec![connected(ip(140, 82, 121, 4))]);
+        let dns = report.targets[0].dns.clone();
+        report.targets[0].diff = Some(Diff {
+            kind: DiffKind::PathBlock,
+            direct: VerdictKind::DpiSni,
+            tunnel: VerdictKind::Ok,
+            reason: "the service works through the tunnel and not directly, so the block is on this path".to_string(),
+        });
+        report.tunnel = Some(TunnelRun {
+            proxy: "127.0.0.1:10808".parse().unwrap(),
+            control: ControlReport {
+                target: Target {
+                    domain: "yandex.ru".to_string(),
+                    port: 443,
+                    role: Role::Control,
+                    known_ips: Vec::new(),
+                },
+                tcp: vec![connected(ip(77, 88, 55, 88))],
+            },
+            targets: vec![TargetReport {
+                target: ad_hoc("github.com"),
+                verdict: ok_verdict(),
+                dns,
+                tcp: vec![connected(ip(140, 82, 121, 4))],
+                tls: Some(tls_probe()),
+                http: Some(http_probe()),
+                payload: None,
+                quic: None,
+                diff: None,
+            }],
+        });
+
+        let text = render(&report);
+        assert!(text.contains("tunnel 127.0.0.1:10808"), "{text}");
+        assert!(text.contains("\ndiff\n"), "{text}");
+        assert!(text.contains("direct  dpi_sni"), "{text}");
+        assert!(text.contains("tunnel  ok"), "{text}");
+        assert!(text.contains("blocked on the path"), "{text}");
+    }
+
+    #[test]
+    fn the_json_report_carries_the_payload_and_the_quic_probe() {
+        let mut report = report_with(Comparison::Identical, vec![connected(ip(140, 82, 121, 4))]);
+        report.targets[0].payload = Some(payload_probe());
+        report.targets[0].quic = Some(quic_probe());
+        let json = render_json(&report).expect("the report serializes");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            parsed["targets"][0]["payload"]["outcome"]["kb_drop"]["range"],
+            "sixteen_to_twenty"
+        );
+        assert_eq!(parsed["targets"][0]["quic"]["outcome"]["silent"]["elapsed"], 5000);
+        assert!(parsed["tunnel"].is_null());
     }
 
     #[test]

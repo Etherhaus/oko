@@ -21,6 +21,11 @@ pub fn addresses(count: usize) -> String {
     }
 }
 
+/// A byte count as `16.0 KB`.
+pub fn kilobytes(bytes: usize) -> String {
+    format!("{:.1} KB", bytes as f64 / 1024.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +43,12 @@ mod tests {
         assert_eq!(addresses(0), "0 addresses");
         assert_eq!(addresses(1), "1 address");
         assert_eq!(addresses(2), "2 addresses");
+    }
+
+    #[test]
+    fn kilobytes_read_with_one_decimal() {
+        assert_eq!(kilobytes(0), "0.0 KB");
+        assert_eq!(kilobytes(16 * 1024), "16.0 KB");
+        assert_eq!(kilobytes(17 * 1024 + 512), "17.5 KB");
     }
 }

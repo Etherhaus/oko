@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 
 use crate::format;
+use crate::route::Route;
 
 /// Enough for a status line and the headers that follow it.
 const MAX_RESPONSE: usize = 16 * 1024;
@@ -104,17 +104,24 @@ impl HttpProbe {
 
 /// Request `domain` as the `Host`. When that gets no answer, try again with
 /// `control_host` on the same address.
-pub async fn probe(domain: &str, ip: IpAddr, port: u16, control_host: &str, timeout: Duration) -> HttpProbe {
+pub async fn probe(
+    domain: &str,
+    ip: IpAddr,
+    port: u16,
+    control_host: &str,
+    timeout: Duration,
+    route: Route,
+) -> HttpProbe {
     let real = HttpAttempt {
         host: domain.to_string(),
-        outcome: attempt(ip, port, domain, timeout).await,
+        outcome: attempt(ip, port, domain, timeout, route).await,
     };
     let control = if real.outcome.responded() {
         None
     } else {
         Some(HttpAttempt {
             host: control_host.to_string(),
-            outcome: attempt(ip, port, control_host, timeout).await,
+            outcome: attempt(ip, port, control_host, timeout, route).await,
         })
     };
     HttpProbe {
@@ -126,12 +133,12 @@ pub async fn probe(domain: &str, ip: IpAddr, port: u16, control_host: &str, time
     }
 }
 
-async fn attempt(ip: IpAddr, port: u16, host: &str, timeout: Duration) -> HttpOutcome {
+async fn attempt(ip: IpAddr, port: u16, host: &str, timeout: Duration, route: Route) -> HttpOutcome {
     let started = Instant::now();
     let deadline = started + timeout;
     let addr = SocketAddr::new(ip, port);
 
-    let mut stream = match tokio::time::timeout_at(deadline.into(), TcpStream::connect(addr)).await {
+    let mut stream = match tokio::time::timeout_at(deadline.into(), route.connect(addr, timeout)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(err)) => {
             return HttpOutcome::Failed {
