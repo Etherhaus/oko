@@ -148,6 +148,20 @@ pub struct DnsProbe {
 }
 
 impl DnsProbe {
+    /// A probe with no answers at all, for tests that only need the shape.
+    #[cfg(test)]
+    pub fn empty(domain: &str) -> DnsProbe {
+        DnsProbe {
+            domain: domain.to_string(),
+            system: ResolveOutcome::Failed {
+                failure: ResolveFailure::NoRecords,
+                elapsed: Duration::ZERO,
+            },
+            doh: Vec::new(),
+            comparison: Comparison::Incomplete,
+        }
+    }
+
     /// Every address any DoH reference returned, deduplicated.
     pub fn doh_ips(&self) -> Vec<IpAddr> {
         collect_ips(&self.doh)

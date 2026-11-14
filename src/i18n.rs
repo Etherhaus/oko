@@ -12,6 +12,7 @@
 use slint::{ComponentHandle, Global};
 
 use crate::gui::Labels;
+use crate::target::Category;
 use crate::verdict::Level;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,6 +88,22 @@ impl Strings {
             Level::Undetermined => self.level_undetermined,
         }
     }
+
+    /// The heading of a group in the target list.
+    pub fn category(&self, category: Category) -> &'static str {
+        match category {
+            Category::VideoHosting => self.category_video_hosting,
+            Category::Social => self.category_social,
+            Category::Messenger => self.category_messenger,
+            Category::AudioStreaming => self.category_audio,
+            Category::VideoStreaming => self.category_video,
+            Category::Games => self.category_games,
+            Category::Encyclopedia => self.category_encyclopedia,
+            Category::Development => self.category_development,
+            Category::Custom => self.category_custom,
+            Category::Control => self.category_custom,
+        }
+    }
 }
 
 labels! {
@@ -145,6 +162,50 @@ labels! {
     run_failed, set_run_failed => ("The run failed", "Прогон не удался"),
     nothing_selected, set_nothing_selected => ("No target is selected", "Не выбрано ни одной цели"),
     bad_socks5, set_bad_socks5 => ("The SOCKS5 address is not valid", "Адрес SOCKS5 не разобран"),
+
+    // Categories
+    category_video_hosting, set_category_video_hosting => ("Video hosting", "Видеохостинги"),
+    category_social, set_category_social => ("Social networks", "Соцсети"),
+    category_messenger, set_category_messenger => ("Messengers", "Мессенджеры"),
+    category_audio, set_category_audio => ("Audio streaming", "Аудиостриминг"),
+    category_video, set_category_video => ("Video streaming", "Видеостриминг"),
+    category_games, set_category_games => ("Games", "Игры"),
+    category_encyclopedia, set_category_encyclopedia => ("Encyclopedias", "Энциклопедии"),
+    category_development, set_category_development => ("Development", "Разработка"),
+    category_custom, set_category_custom => ("Custom", "Пользовательские"),
+
+    // Custom targets
+    add_domain, set_add_domain => ("+ add a domain", "+ добавить домен"),
+    add, set_add => ("Add", "Добавить"),
+    cancel, set_cancel => ("Cancel", "Отмена"),
+    domain_placeholder, set_domain_placeholder => ("example.org", "example.org"),
+    remove, set_remove => ("Remove", "Удалить"),
+    custom_mark, set_custom_mark => ("custom", "пользовательская"),
+    bad_domain, set_bad_domain => (
+        "A bare domain, without a scheme or a path",
+        "Нужен голый домен, без схемы и пути"
+    ),
+    duplicate_domain, set_duplicate_domain => (
+        "That domain is already in the list",
+        "Такой домен уже есть в списке"
+    ),
+
+    // Frame
+    frame, set_frame => ("Window frame", "Рамка окна"),
+
+    // Dashboard
+    dash_ok, set_dash_ok => ("reachable", "доступно"),
+    dash_blocked, set_dash_blocked => ("blocked", "режется"),
+    dash_unknown, set_dash_unknown => ("unknown", "неизвестно"),
+    dash_empty, set_dash_empty => ("No run yet", "Прогонов ещё не было"),
+    dash_delta, set_dash_delta => ("vs the previous run", "к прошлому прогону"),
+    seconds, set_seconds => ("s", "с"),
+
+    // Watchdog
+    interrupted, set_interrupted => (
+        "The run was interrupted by the watchdog",
+        "Прогон прерван сторожевым таймером"
+    ),
 
     // Export
     export_text, set_export_text => ("Export text", "Экспорт текста"),

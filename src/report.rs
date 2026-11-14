@@ -30,6 +30,17 @@ pub struct RunReport {
     pub control: ControlReport,
     /// The same probes through a SOCKS5 proxy, when one was asked for.
     pub tunnel: Option<TunnelRun>,
+    /// Set when the watchdog ended the run before every target was probed.
+    pub interrupted: Option<Interrupted>,
+}
+
+/// The watchdog ended the run before every target was probed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Interrupted {
+    /// The target whose probes were running when the budget ran out.
+    pub target: String,
+    /// The budget the run was given, in seconds.
+    pub budget_secs: u64,
 }
 
 /// The probes and the verdict for one service.
@@ -104,6 +115,13 @@ pub fn render(report: &RunReport) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "{} {} — probe report", report.tool, report.version);
     let _ = writeln!(out, "{}", report.generated_at);
+    if let Some(interrupted) = &report.interrupted {
+        let _ = writeln!(
+            out,
+            "run interrupted by the watchdog at {} after {} s: the report below is partial",
+            interrupted.target, interrupted.budget_secs
+        );
+    }
 
     for target in &report.targets {
         let _ = writeln!(out);
@@ -423,7 +441,7 @@ mod tests {
     use crate::probes::quic::{QuicOutcome, QuicProbe};
     use crate::probes::tcp::TcpOutcome;
     use crate::probes::tls::TlsAttempt;
-    use crate::target::{Role, ad_hoc};
+    use crate::target::{Category, Role, ad_hoc};
     use crate::verdict::{Diff, DiffKind, Level};
     use std::time::Duration;
 
@@ -546,10 +564,13 @@ mod tests {
                     port: 443,
                     role: Role::Control,
                     known_ips: Vec::new(),
+                    category: Category::Control,
+                    custom: false,
                 },
                 tcp: vec![connected(ip(77, 88, 55, 88))],
             },
             tunnel: None,
+            interrupted: None,
         }
     }
 
@@ -769,6 +790,8 @@ mod tests {
                     port: 443,
                     role: Role::Control,
                     known_ips: Vec::new(),
+                    category: Category::Control,
+                    custom: false,
                 },
                 tcp: vec![connected(ip(77, 88, 55, 88))],
             },

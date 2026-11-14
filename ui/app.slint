@@ -9,7 +9,13 @@ import { ScrollView } from "std-widgets.slint";
 
 // One row of the target table.
 export struct TargetRow {
+    // The row's place in the target list; -1 on a group header.
     index: int,
+    // The group a header stands for, so the header's box can tick the whole
+    // group.
+    group: int,
+    // A header row: the category's name and a box that ticks the group.
+    header: bool,
     domain: string,
     checked: bool,
     // The canonical verdict name, empty until the target has been probed.
@@ -21,6 +27,8 @@ export struct TargetRow {
     // The tunnel comparison, empty until a tunnel run has been made.
     diff: string,
     running: bool,
+    // A target the user added: it can be removed, and the list marks it.
+    custom: bool,
 }
 
 export global Labels {
@@ -59,6 +67,41 @@ export global Labels {
     in property <string> export-empty;
     in property <string> export-done;
     in property <string> export-failed;
+
+    // The groups of the target list.
+    in property <string> category-video-hosting;
+    in property <string> category-social;
+    in property <string> category-messenger;
+    in property <string> category-audio;
+    in property <string> category-video;
+    in property <string> category-games;
+    in property <string> category-encyclopedia;
+    in property <string> category-development;
+    in property <string> category-custom;
+
+    // Targets the user adds.
+    in property <string> add-domain;
+    in property <string> add;
+    in property <string> cancel;
+    in property <string> domain-placeholder;
+    in property <string> remove;
+    in property <string> custom-mark;
+    in property <string> bad-domain;
+    in property <string> duplicate-domain;
+
+    // The window frame.
+    in property <string> frame;
+
+    // The dashboard.
+    in property <string> dash-ok;
+    in property <string> dash-blocked;
+    in property <string> dash-unknown;
+    in property <string> dash-empty;
+    in property <string> dash-delta;
+    in property <string> seconds;
+
+    // The watchdog.
+    in property <string> interrupted;
 }
 
 export global Theme {
@@ -429,12 +472,47 @@ component TargetItem inherits Rectangle {
     in property <bool> selected;
     callback toggle();
     callback select();
+    callback remove();
 
-    height: 54px;
+    height: root.item.header ? 26px : 54px;
     border-radius: Theme.radius-sm;
-    background: root.selected ? Theme.accent-soft : (touch.has-hover ? Theme.surface-2 : transparent);
+    background: root.item.header ? transparent : (root.selected ? Theme.accent-soft : (touch.has-hover ? Theme.surface-2 : transparent));
 
-    HorizontalLayout {
+    // The row's own hit area sits below the content, so the checkbox and the
+    // remove button get their clicks first.
+    touch := TouchArea {
+        clicked => {
+            root.select();
+        }
+    }
+
+    if root.item.header: HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        // `alignment` is the main axis (horizontal here); the cross axis is
+        // what centres the box and the label vertically.
+        alignment: start;
+        cross-axis-alignment: center;
+
+        Check {
+            checked: root.item.checked;
+            vertical-stretch: 0;
+            toggled => {
+                root.toggle();
+            }
+        }
+        Text {
+            text: root.item.domain;
+            color: Theme.dim;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+
+    if !root.item.header: HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
         spacing: 10px;
@@ -467,6 +545,14 @@ component TargetItem inherits Rectangle {
             }
         }
 
+        if root.item.custom: GhostButton {
+            text: "×";
+            vertical-stretch: 0;
+            clicked => {
+                root.remove();
+            }
+        }
+
         Pill {
             text: root.item.verdict == "" ? "—" : root.item.verdict;
             ink: root.item.level == 0 ? Theme.ok : (root.item.level == 2 ? Theme.bad : (root.item.level == 4 ? Theme.dim : Theme.warn));
@@ -474,25 +560,21 @@ component TargetItem inherits Rectangle {
             vertical-stretch: 0;
         }
     }
-
-    touch := TouchArea {
-        clicked => {
-            root.select();
-        }
-    }
 }
 
 export component AppWindow inherits Window {
     title: "Oko";
-    preferred-width: 1000px;
-    preferred-height: 700px;
-    min-width: 860px;
-    min-height: 560px;
+    // Small enough for a 1280x720 screen; a tiling window manager gives the
+    // window the whole screen anyway.
+    preferred-width: 900px;
+    preferred-height: 620px;
+    min-width: 780px;
+    min-height: 520px;
     default-font-size: 14px;
     default-font-family: Theme.font-family;
-    // The 3px frame is the window background; the surface sits inside it.
+    // The frame is the window background; the surface sits inside it.
     background: Theme.accent;
-    property <length> frame-width: 3px;
+    property <length> frame-width: root.frame ? 3px : 0px;
 
     in-out property <[TargetRow]> rows;
     in-out property <int> selected: -1;
@@ -504,9 +586,23 @@ export component AppWindow inherits Window {
     in-out property <int> timeout-value: 5;
     in-out property <string> socks5-text;
     in-out property <string> lang: "en";
+    in-out property <bool> frame: true;
+    in-out property <bool> adding: false;
+    in-out property <string> add-text;
+    in-out property <string> dash-ok: "0";
+    in-out property <string> dash-blocked: "0";
+    in-out property <string> dash-unknown: "0";
+    in-out property <string> dash-ok-delta;
+    in-out property <string> dash-blocked-delta;
+    in-out property <string> dash-unknown-delta;
+    in-out property <string> dash-info;
+    in-out property <string> dash-delta;
+    in-out property <bool> dash-empty: true;
 
     callback toggle(int);
+    callback toggle-group(int);
     callback select(int);
+    callback remove(int);
     callback check-all();
     callback check-none();
     callback start();
@@ -519,18 +615,23 @@ export component AppWindow inherits Window {
     callback pick-ru();
     callback pick-en();
     callback socks5-edited(string);
+    callback toggle-frame();
+    callback begin-add();
+    callback cancel-add();
+    callback add-text-edited(string);
+    callback add-domain();
 
     Rectangle {
         x: root.frame-width;
         y: root.frame-width;
         width: parent.width - 2 * root.frame-width;
         height: parent.height - 2 * root.frame-width;
-        border-radius: Theme.radius-win;
+        border-radius: root.frame ? Theme.radius-win : 0px;
         background: Theme.bg-glow;
 
         VerticalLayout {
-            padding: 20px;
-            spacing: 14px;
+            padding: 16px;
+            spacing: 10px;
 
             // Header: the name, the purpose, the theme and the language.
             HorizontalLayout {
@@ -583,11 +684,11 @@ export component AppWindow inherits Window {
             // Settings and the run button.
             Card {
                 VerticalLayout {
-                    padding: 14px;
-                    spacing: 10px;
+                    padding: 12px;
+                    spacing: 8px;
 
                     HorizontalLayout {
-                        spacing: 18px;
+                        spacing: 14px;
 
                         VerticalLayout {
                             spacing: 3px;
@@ -625,10 +726,29 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: center;
+
+                            Check {
+                                checked: root.frame;
+                                vertical-stretch: 0;
+                                toggled => {
+                                    root.toggle-frame();
+                                }
+                            }
+                            Text {
+                                text: Labels.frame;
+                                color: Theme.text-2;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
 
                     HorizontalLayout {
-                        spacing: 18px;
+                        spacing: 14px;
 
                         Text {
                             text: Labels.timeout-hint;
@@ -670,7 +790,7 @@ export component AppWindow inherits Window {
                             color: Theme.dim;
                             font-size: 12px;
                             vertical-alignment: center;
-                            width: 300px;
+                            width: 320px;
                             overflow: elide;
                         }
                     }
@@ -685,19 +805,132 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // The dashboard: the counters of the last run and the delta to the
+            // run before it.
+            Card {
+                HorizontalLayout {
+                    padding: 12px;
+                    spacing: 20px;
+                    alignment: center;
+
+                    if root.dash-empty: Text {
+                        text: Labels.dash-empty;
+                        color: Theme.dim;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    if !root.dash-empty: VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: end;
+                            Text {
+                                text: root.dash-ok;
+                                color: Theme.ok;
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.dash-ok-delta;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                vertical-alignment: bottom;
+                            }
+                        }
+                        Text {
+                            text: Labels.dash-ok;
+                            color: Theme.dim;
+                            font-size: 10px;
+                        }
+                    }
+                    if !root.dash-empty: VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: end;
+                            Text {
+                                text: root.dash-blocked;
+                                color: Theme.bad;
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.dash-blocked-delta;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                vertical-alignment: bottom;
+                            }
+                        }
+                        Text {
+                            text: Labels.dash-blocked;
+                            color: Theme.dim;
+                            font-size: 10px;
+                        }
+                    }
+                    if !root.dash-empty: VerticalLayout {
+                        spacing: 0px;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: end;
+                            Text {
+                                text: root.dash-unknown;
+                                color: Theme.warn;
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.dash-unknown-delta;
+                                color: Theme.dim;
+                                font-size: 11px;
+                                vertical-alignment: bottom;
+                            }
+                        }
+                        Text {
+                            text: Labels.dash-unknown;
+                            color: Theme.dim;
+                            font-size: 10px;
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        alignment: end;
+                        Text {
+                            text: root.dash-info;
+                            color: Theme.text-2;
+                            font-size: 11px;
+                            horizontal-alignment: right;
+                        }
+                        Text {
+                            text: root.dash-delta;
+                            color: Theme.dim;
+                            font-size: 11px;
+                            horizontal-alignment: right;
+                        }
+                    }
+                }
+            }
+
             // The table and the details.
             HorizontalLayout {
-                spacing: 14px;
+                spacing: 12px;
                 vertical-stretch: 1;
 
                 Card {
                     horizontal-stretch: 44;
+                    min-height: 0px;
                     VerticalLayout {
-                        padding: 14px;
+                        padding: 12px;
                         spacing: 8px;
 
                         HorizontalLayout {
-                            spacing: 8px;
+                            spacing: 6px;
 
                             Text {
                                 text: Labels.targets;
@@ -706,6 +939,12 @@ export component AppWindow inherits Window {
                                 font-weight: 600;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
+                            }
+                            GhostButton {
+                                text: Labels.add-domain;
+                                clicked => {
+                                    root.begin-add();
+                                }
                             }
                             GhostButton {
                                 text: Labels.check-all;
@@ -717,6 +956,31 @@ export component AppWindow inherits Window {
                                 text: Labels.check-none;
                                 clicked => {
                                     root.check-none();
+                                }
+                            }
+                        }
+
+                        if root.adding: HorizontalLayout {
+                            spacing: 6px;
+
+                            Field {
+                                text: root.add-text;
+                                placeholder: Labels.domain-placeholder;
+                                horizontal-stretch: 1;
+                                edited(text) => {
+                                    root.add-text-edited(text);
+                                }
+                            }
+                            GhostButton {
+                                text: Labels.add;
+                                clicked => {
+                                    root.add-domain();
+                                }
+                            }
+                            GhostButton {
+                                text: Labels.cancel;
+                                clicked => {
+                                    root.cancel-add();
                                 }
                             }
                         }
@@ -738,8 +1002,11 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        // The list scrolls inside the card: without the zero
+                        // minimum the window would grow to fit every row.
                         ScrollView {
                             vertical-stretch: 1;
+                            min-height: 0px;
 
                             VerticalLayout {
                                 spacing: 2px;
@@ -748,10 +1015,19 @@ export component AppWindow inherits Window {
                                     item: entry;
                                     selected: root.selected == entry.index;
                                     toggle => {
-                                        root.toggle(entry.index);
+                                        if entry.header {
+                                            root.toggle-group(entry.group);
+                                        } else {
+                                            root.toggle(entry.index);
+                                        }
                                     }
                                     select => {
-                                        root.select(entry.index);
+                                        if !entry.header {
+                                            root.select(entry.index);
+                                        }
+                                    }
+                                    remove => {
+                                        root.remove(entry.index);
                                     }
                                 }
                             }
@@ -761,8 +1037,9 @@ export component AppWindow inherits Window {
 
                 Card {
                     horizontal-stretch: 56;
+                    min-height: 0px;
                     VerticalLayout {
-                        padding: 14px;
+                        padding: 12px;
                         spacing: 8px;
 
                         Text {
@@ -787,6 +1064,7 @@ export component AppWindow inherits Window {
                             content-width: self.width;
                             content-height: detail-text.preferred-height;
                             vertical-stretch: 1;
+                            min-height: 0px;
 
                             detail-text := Text {
                                 width: parent.width;

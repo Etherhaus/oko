@@ -573,7 +573,7 @@ mod tests {
     use crate::probes::http::{HttpAttempt, HttpOutcome};
     use crate::probes::payload::{DropRange, PayloadOutcome, PayloadProbe};
     use crate::probes::tls::TlsAttempt;
-    use crate::target::Role;
+    use crate::target::{Category, Role};
     use std::time::Duration;
 
     fn ip(text: &str) -> IpAddr {
@@ -586,6 +586,8 @@ mod tests {
             port: 443,
             role: Role::Service,
             known_ips: Vec::new(),
+            category: Category::Custom,
+            custom: true,
         }
     }
 

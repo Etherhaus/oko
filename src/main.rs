@@ -7,6 +7,7 @@
 //! Without a subcommand the binary opens the window; `oko probe` stays for
 //! debugging and CI.
 
+mod config;
 mod format;
 mod gui;
 mod i18n;
@@ -25,7 +26,6 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 
 use run::{DEFAULT_TIMEOUT_SECS, Options};
-use target::Role;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -102,10 +102,7 @@ fn main() -> ExitCode {
 
 async fn probe_command(args: ProbeArgs) -> ExitCode {
     let targets = if args.all {
-        target::builtin()
-            .into_iter()
-            .filter(|target| target.role == Role::Service)
-            .collect()
+        target::services()
     } else {
         // clap's argument group guarantees exactly one of the two.
         let domain = args.domain.expect("clap requires a domain or --all");
