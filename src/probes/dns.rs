@@ -13,6 +13,9 @@ use std::collections::BTreeSet;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
+use crate::format;
 use wire::RecordData;
 
 /// The response code a resolver answered with, re-exported because
@@ -52,7 +55,8 @@ pub const DOH_REFERENCES: &[DohReference] = &[
 const MAX_DOH_BODY: u64 = 64 * 1024;
 
 /// Why a resolver gave no addresses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResolveFailure {
     /// The resolver could not be reached: DNS, TCP, TLS or HTTP failed.
     Unreachable(String),
@@ -73,10 +77,19 @@ impl std::fmt::Display for ResolveFailure {
 }
 
 /// What one resolver did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResolveOutcome {
-    Resolved { ips: Vec<IpAddr>, elapsed: Duration },
-    Failed { failure: ResolveFailure, elapsed: Duration },
+    Resolved {
+        ips: Vec<IpAddr>,
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
+    Failed {
+        failure: ResolveFailure,
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
 }
 
 impl ResolveOutcome {
@@ -92,17 +105,27 @@ impl ResolveOutcome {
             ResolveOutcome::Resolved { elapsed, .. } | ResolveOutcome::Failed { elapsed, .. } => *elapsed,
         }
     }
+
+    /// The outcome in plain words, for the report and the verdict facts.
+    pub fn describe(&self) -> String {
+        let elapsed = format::duration(self.elapsed());
+        match self {
+            ResolveOutcome::Resolved { ips, .. } => format!("ok, {} ({elapsed})", format::addresses(ips.len())),
+            ResolveOutcome::Failed { failure, .. } => format!("{failure} ({elapsed})"),
+        }
+    }
 }
 
 /// One DoH reference and what it said.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DohAnswer {
     pub reference: &'static str,
     pub outcome: ResolveOutcome,
 }
 
 /// How the system resolver and the DoH references compare.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Comparison {
     /// Every side that answered returned the same addresses.
     Identical,
@@ -116,7 +139,7 @@ pub enum Comparison {
 }
 
 /// The whole DNS probe for one domain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DnsProbe {
     pub domain: String,
     pub system: ResolveOutcome,
@@ -125,6 +148,11 @@ pub struct DnsProbe {
 }
 
 impl DnsProbe {
+    /// Every address any DoH reference returned, deduplicated.
+    pub fn doh_ips(&self) -> Vec<IpAddr> {
+        collect_ips(&self.doh)
+    }
+
     /// The addresses the TCP probe should try: the system resolver's answer,
     /// falling back to the recorded ones when the resolver returns nothing.
     pub fn addresses_for_tcp(&self, known_ips: &[IpAddr]) -> (Vec<IpAddr>, IpSource) {
@@ -144,7 +172,8 @@ pub fn addresses_for_tcp(outcome: &ResolveOutcome, known_ips: &[IpAddr]) -> (Vec
 }
 
 /// Where the addresses the TCP probe used came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IpSource {
     /// The system resolver.
     Resolved,

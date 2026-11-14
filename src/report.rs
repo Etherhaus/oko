@@ -1,36 +1,47 @@
-//! The text report.
+//! The text and JSON reports.
 //!
-//! The report states what each probe observed and where every address came
-//! from. It does not soften a failure and does not promote a difference to a
-//! finding: the notes at the bottom say what a reader must not conclude.
+//! The report states what each probe observed, what the verdict rests on, and
+//! where every address came from. It does not soften a failure and does not
+//! promote a difference to a finding: the notes at the bottom say what a reader
+//! must not conclude.
 
 use std::fmt::Write as _;
 use std::net::IpAddr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::Serialize;
 
 use crate::probes::dns::{Comparison, DnsProbe, IpSource, ResolveOutcome};
-use crate::probes::tcp::{TcpOutcome, TcpProbe};
+use crate::probes::http::HttpProbe;
+use crate::probes::tcp::TcpProbe;
+use crate::probes::tls::TlsProbe;
 use crate::target::{KNOWN_IPS_RECORDED, Target};
+use crate::verdict::{Verdict, VerdictKind};
 
 /// Everything one run produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunReport {
+    pub tool: &'static str,
+    pub version: &'static str,
     pub generated_at: String,
     pub targets: Vec<TargetReport>,
     pub control: ControlReport,
 }
 
-/// The probes for one service.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The probes and the verdict for one service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TargetReport {
     pub target: Target,
+    pub verdict: Verdict,
     pub dns: DnsProbe,
     pub tcp: Vec<TcpProbe>,
+    pub tls: Option<TlsProbe>,
+    pub http: Option<HttpProbe>,
 }
 
 /// The probes for the control target, which only has to prove the network is
 /// alive.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ControlReport {
     pub target: Target,
     pub tcp: Vec<TcpProbe>,
@@ -75,16 +86,30 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 /// Render the whole run as text.
 pub fn render(report: &RunReport) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "Oko {} — probe report", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(out, "{} {} — probe report", report.tool, report.version);
     let _ = writeln!(out, "{}", report.generated_at);
 
     for target in &report.targets {
         let _ = writeln!(out);
         let _ = writeln!(out, "target {}", target.target.label());
+        render_verdict(&mut out, &target.verdict);
+
         let _ = writeln!(out);
         render_dns(&mut out, &target.dns);
         let _ = writeln!(out);
         render_tcp(&mut out, &target.tcp);
+        if let Some(tls) = &target.tls {
+            let _ = writeln!(out);
+            render_tls(&mut out, tls);
+        }
+        if let Some(http) = &target.http {
+            let _ = writeln!(out);
+            render_http(&mut out, http);
+        }
+        if target.verdict.kind != VerdictKind::Ok {
+            let _ = writeln!(out);
+            render_facts(&mut out, &target.verdict);
+        }
     }
 
     let _ = writeln!(out);
@@ -99,25 +124,33 @@ pub fn render(report: &RunReport) -> String {
     }
 
     let _ = writeln!(out);
-    let _ = writeln!(out, "notes");
-    let _ = writeln!(
-        out,
-        "  - a difference between the system resolver and a DoH reference is not a verdict:"
-    );
-    let _ = writeln!(
-        out,
-        "    CDN geo-DNS legitimately returns different addresses to different resolvers"
-    );
-    let _ = writeln!(
-        out,
-        "  - a DoH reference that cannot be reached is reported as such, not as an error"
-    );
-    let _ = writeln!(
-        out,
-        "  - a successful TCP connect says the path to that address is open, nothing more"
-    );
-
+    render_notes(&mut out);
     out
+}
+
+/// Render the whole run as JSON.
+pub fn render_json(report: &RunReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(report)
+}
+
+fn render_verdict(out: &mut String, verdict: &Verdict) {
+    if verdict.level == verdict.kind.default_level() {
+        let _ = writeln!(out, "  verdict  {}", verdict.kind.as_str());
+    } else {
+        let _ = writeln!(
+            out,
+            "  verdict  {}  [{}]",
+            verdict.kind.as_str(),
+            verdict.level.as_str()
+        );
+    }
+    let _ = writeln!(out, "    {}", verdict.reason);
+    if verdict.used_recorded_addresses() {
+        let _ = writeln!(
+            out,
+            "    address from the recorded set, not from a fresh resolve: the system resolver returned nothing"
+        );
+    }
 }
 
 fn render_dns(out: &mut String, dns: &DnsProbe) {
@@ -149,18 +182,9 @@ fn render_dns(out: &mut String, dns: &DnsProbe) {
 }
 
 fn render_resolver(out: &mut String, label: &str, outcome: &ResolveOutcome) {
-    let elapsed = format_duration(outcome.elapsed());
-    match outcome {
-        ResolveOutcome::Resolved { ips, .. } => {
-            let noun = if ips.len() == 1 { "address" } else { "addresses" };
-            row(out, label, &format!("ok, {} {noun} ({elapsed})", ips.len()));
-            for ip in ips {
-                let _ = writeln!(out, "      {ip}");
-            }
-        }
-        ResolveOutcome::Failed { failure, .. } => {
-            row(out, label, &format!("{failure} ({elapsed})"));
-        }
+    row(out, label, &outcome.describe());
+    for ip in outcome.ips() {
+        let _ = writeln!(out, "      {ip}");
     }
 }
 
@@ -171,15 +195,7 @@ fn render_tcp(out: &mut String, probes: &[TcpProbe]) {
         return;
     }
     for probe in probes {
-        let elapsed = format_duration(probe.outcome.elapsed());
-        let status = match &probe.outcome {
-            TcpOutcome::Connected { .. } => "connected".to_string(),
-            TcpOutcome::Refused { .. } => "refused".to_string(),
-            TcpOutcome::Timeout { .. } => "timed out".to_string(),
-            TcpOutcome::NoRoute { .. } => "no route from this host".to_string(),
-            TcpOutcome::Failed { reason, .. } => format!("failed: {reason}"),
-        };
-        row(out, &probe.label(), &format!("{status} ({elapsed})"));
+        row(out, &probe.label(), &probe.outcome.describe());
     }
     if probes.iter().any(|probe| probe.source == IpSource::Builtin) {
         let _ = writeln!(
@@ -187,6 +203,59 @@ fn render_tcp(out: &mut String, probes: &[TcpProbe]) {
             "    note: these addresses come from the built-in list recorded on {KNOWN_IPS_RECORDED}; the system resolver returned nothing"
         );
     }
+}
+
+fn render_tls(out: &mut String, tls: &TlsProbe) {
+    let _ = writeln!(out, "  TLS");
+    row(out, &format!("SNI {}", tls.real.sni), &tls.real.outcome.describe());
+    if let Some(control) = &tls.control {
+        row(out, &format!("SNI {}", control.sni), &control.outcome.describe());
+    }
+}
+
+fn render_http(out: &mut String, http: &HttpProbe) {
+    let _ = writeln!(out, "  HTTP");
+    row(out, &format!("Host {}", http.real.host), &http.real.outcome.describe());
+    if let Some(control) = &http.control {
+        row(out, &format!("Host {}", control.host), &control.outcome.describe());
+    }
+}
+
+fn render_facts(out: &mut String, verdict: &Verdict) {
+    let _ = writeln!(out, "  facts");
+    for fact in &verdict.facts {
+        let _ = writeln!(out, "    - {fact}");
+    }
+}
+
+fn render_notes(out: &mut String) {
+    let _ = writeln!(out, "notes");
+    let _ = writeln!(
+        out,
+        "  - a difference between the system resolver and a DoH reference is not a verdict:"
+    );
+    let _ = writeln!(
+        out,
+        "    CDN geo-DNS legitimately returns different addresses to different resolvers"
+    );
+    let _ = writeln!(
+        out,
+        "  - a DoH reference that cannot be reached is reported as such, not as an error"
+    );
+    let _ = writeln!(
+        out,
+        "  - a handshake that reaches the server proves the path did not object to the name,"
+    );
+    let _ = writeln!(out, "    whatever the certificate says");
+    let _ = writeln!(
+        out,
+        "  - the HTTP probe speaks plain HTTP on port 80; a server that does not answer there"
+    );
+    let _ = writeln!(out, "    says nothing about blocking");
+    let _ = writeln!(
+        out,
+        "  - an address with no route from this host is never counted as a block"
+    );
 }
 
 /// One `label   value` line, indented under a section.
@@ -210,24 +279,19 @@ fn join_ips(ips: &[IpAddr]) -> String {
     text
 }
 
-fn format_duration(elapsed: Duration) -> String {
-    let millis = elapsed.as_millis();
-    if millis < 1_000 {
-        format!("{millis} ms")
-    } else {
-        format!("{:.1} s", elapsed.as_secs_f64())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::probes::dns::{DohAnswer, Rcode, ResolveFailure};
+    use crate::probes::http::{HttpAttempt, HttpOutcome};
+    use crate::probes::tcp::TcpOutcome;
+    use crate::probes::tls::TlsAttempt;
     use crate::target::{Role, ad_hoc};
-    use std::net::{IpAddr, Ipv4Addr};
+    use crate::verdict::Level;
+    use std::time::Duration;
 
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+        IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d))
     }
 
     fn resolved(ips: &[IpAddr]) -> ResolveOutcome {
@@ -237,10 +301,10 @@ mod tests {
         }
     }
 
-    fn connected(ip: IpAddr) -> TcpProbe {
+    fn connected(address: IpAddr) -> TcpProbe {
         TcpProbe {
             domain: "github.com".to_string(),
-            ip,
+            ip: address,
             port: 443,
             source: IpSource::Resolved,
             outcome: TcpOutcome::Connected {
@@ -249,11 +313,55 @@ mod tests {
         }
     }
 
+    fn ok_verdict() -> Verdict {
+        Verdict {
+            kind: VerdictKind::Ok,
+            level: Level::Ok,
+            reason: "every probe reached the service".to_string(),
+            facts: vec!["system resolver: ok, 1 address (12 ms)".to_string()],
+            address_source: Some(IpSource::Resolved),
+        }
+    }
+
+    fn tls_probe() -> TlsProbe {
+        TlsProbe {
+            domain: "github.com".to_string(),
+            ip: ip(140, 82, 121, 4),
+            port: 443,
+            real: TlsAttempt {
+                sni: "github.com".to_string(),
+                outcome: crate::probes::tls::TlsOutcome::Ok {
+                    elapsed: Duration::from_millis(120),
+                },
+            },
+            control: None,
+        }
+    }
+
+    fn http_probe() -> HttpProbe {
+        HttpProbe {
+            domain: "github.com".to_string(),
+            ip: ip(140, 82, 121, 4),
+            port: 80,
+            real: HttpAttempt {
+                host: "github.com".to_string(),
+                outcome: HttpOutcome::Response {
+                    status: 301,
+                    elapsed: Duration::from_millis(85),
+                },
+            },
+            control: None,
+        }
+    }
+
     fn report_with(comparison: Comparison, tcp: Vec<TcpProbe>) -> RunReport {
         RunReport {
+            tool: "oko",
+            version: "0.1.0",
             generated_at: "2026-11-14T21:52:03Z".to_string(),
             targets: vec![TargetReport {
                 target: ad_hoc("github.com"),
+                verdict: ok_verdict(),
                 dns: DnsProbe {
                     domain: "github.com".to_string(),
                     system: resolved(&[ip(140, 82, 121, 4)]),
@@ -264,6 +372,8 @@ mod tests {
                     comparison,
                 },
                 tcp,
+                tls: Some(tls_probe()),
+                http: Some(http_probe()),
             }],
             control: ControlReport {
                 target: Target {
@@ -304,14 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn durations_read_as_milliseconds_then_seconds() {
-        assert_eq!(format_duration(Duration::from_millis(0)), "0 ms");
-        assert_eq!(format_duration(Duration::from_millis(999)), "999 ms");
-        assert_eq!(format_duration(Duration::from_millis(1_000)), "1.0 s");
-        assert_eq!(format_duration(Duration::from_millis(5_001)), "5.0 s");
-    }
-
-    #[test]
     fn a_long_address_list_is_summarised() {
         let ips: Vec<IpAddr> = (1..=9).map(|last| ip(10, 0, 0, last)).collect();
         assert_eq!(
@@ -322,17 +424,61 @@ mod tests {
     }
 
     #[test]
-    fn the_report_names_the_target_and_every_resolver() {
+    fn the_report_names_the_target_the_verdict_and_every_probe() {
         let text = render(&report_with(
             Comparison::Identical,
             vec![connected(ip(140, 82, 121, 4))],
         ));
         assert!(text.contains("target github.com:443"), "{text}");
+        assert!(text.contains("verdict  ok\n"), "{text}");
+        assert!(!text.contains("[ok]"), "{text}");
+        assert!(text.contains("every probe reached the service"), "{text}");
         assert!(text.contains("system (getaddrinfo)"), "{text}");
         assert!(text.contains("DoH dns.google"), "{text}");
-        assert!(text.contains("140.82.121.4"), "{text}");
         assert!(text.contains("connected (24 ms)"), "{text}");
+        assert!(text.contains("SNI github.com"), "{text}");
+        assert!(text.contains("handshake completed (120 ms)"), "{text}");
+        assert!(text.contains("Host github.com"), "{text}");
+        assert!(text.contains("HTTP 301 (85 ms)"), "{text}");
         assert!(text.contains("control yandex.ru:443"), "{text}");
+    }
+
+    #[test]
+    fn an_ok_verdict_does_not_repeat_the_facts() {
+        let text = render(&report_with(
+            Comparison::Identical,
+            vec![connected(ip(140, 82, 121, 4))],
+        ));
+        assert!(!text.contains("  facts"), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_verdict_lists_its_facts() {
+        let mut report = report_with(Comparison::Identical, vec![connected(ip(140, 82, 121, 4))]);
+        report.targets[0].verdict = Verdict {
+            kind: VerdictKind::Unknown,
+            level: Level::Undetermined,
+            reason: "the handshake was killed with the real name and with a known-good name".to_string(),
+            facts: vec![
+                "TLS with SNI github.com: the connection ended after the ClientHello (5 ms)".to_string(),
+                "TLS with SNI yandex.ru: the connection ended after the ClientHello (4 ms)".to_string(),
+            ],
+            address_source: Some(IpSource::Resolved),
+        };
+        let text = render(&report);
+        assert!(text.contains("verdict  unknown\n"), "{text}");
+        assert!(text.contains("  facts"), "{text}");
+        assert!(text.contains("TLS with SNI yandex.ru"), "{text}");
+    }
+
+    #[test]
+    fn a_verdict_on_recorded_addresses_says_so() {
+        let mut report = report_with(Comparison::Incomplete, vec![connected(ip(140, 82, 121, 4))]);
+        report.targets[0].verdict.address_source = Some(IpSource::Builtin);
+        report.targets[0].tcp[0].source = IpSource::Builtin;
+        let text = render(&report);
+        assert!(text.contains("address from the recorded set"), "{text}");
+        assert!(text.contains("built-in list recorded on"), "{text}");
     }
 
     #[test]
@@ -354,14 +500,14 @@ mod tests {
     fn an_unreachable_reference_is_reported_as_unreachable() {
         let mut report = report_with(Comparison::Incomplete, vec![connected(ip(140, 82, 121, 4))]);
         report.targets[0].dns.doh.push(DohAnswer {
-            reference: "dns.quad9.net",
+            reference: "dns.sb",
             outcome: ResolveOutcome::Failed {
                 failure: ResolveFailure::Unreachable("timed out".to_string()),
                 elapsed: Duration::from_millis(5_001),
             },
         });
         let text = render(&report);
-        assert!(text.contains("DoH dns.quad9.net"), "{text}");
+        assert!(text.contains("DoH dns.sb"), "{text}");
         assert!(text.contains("unreachable: timed out (5.0 s)"), "{text}");
         assert!(text.contains("incomplete"), "{text}");
     }
@@ -383,14 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn a_builtin_address_is_labelled_as_such() {
-        let mut report = report_with(Comparison::Incomplete, vec![connected(ip(140, 82, 121, 4))]);
-        report.targets[0].tcp[0].source = IpSource::Builtin;
-        let text = render(&report);
-        assert!(text.contains("built-in list recorded on"), "{text}");
-    }
-
-    #[test]
     fn a_target_without_addresses_says_so() {
         let text = render(&report_with(Comparison::Incomplete, Vec::new()));
         assert!(text.contains("no address to try"), "{text}");
@@ -405,5 +543,41 @@ mod tests {
         };
         let text = render(&report);
         assert!(text.contains("answered NXDOMAIN (3 ms)"), "{text}");
+    }
+
+    #[test]
+    fn the_json_report_carries_the_verdict_and_the_probes() {
+        let json = render_json(&report_with(
+            Comparison::Identical,
+            vec![connected(ip(140, 82, 121, 4))],
+        ))
+        .expect("the report serializes");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["tool"], "oko");
+        assert_eq!(parsed["targets"][0]["verdict"]["kind"], "ok");
+        assert_eq!(parsed["targets"][0]["verdict"]["level"], "ok");
+        assert_eq!(parsed["targets"][0]["tcp"][0]["outcome"]["connected"]["elapsed"], 24);
+        assert_eq!(parsed["targets"][0]["tls"]["real"]["outcome"]["ok"]["elapsed"], 120);
+        assert_eq!(
+            parsed["targets"][0]["http"]["real"]["outcome"]["response"]["status"],
+            301
+        );
+        assert_eq!(parsed["targets"][0]["dns"]["comparison"], "identical");
+        assert_eq!(parsed["control"]["target"]["domain"], "yandex.ru");
+    }
+
+    #[test]
+    fn the_json_report_names_a_failed_resolve_by_its_code() {
+        let mut report = report_with(Comparison::Incomplete, vec![connected(ip(140, 82, 121, 4))]);
+        report.targets[0].dns.system = ResolveOutcome::Failed {
+            failure: ResolveFailure::Rcode(Rcode::NameError),
+            elapsed: Duration::from_millis(3),
+        };
+        let json = render_json(&report).expect("the report serializes");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            parsed["targets"][0]["dns"]["system"]["failed"]["failure"]["rcode"],
+            "NXDOMAIN"
+        );
     }
 }

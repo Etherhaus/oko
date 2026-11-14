@@ -7,6 +7,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
+use serde::Serialize;
+
 /// Every probe in this tool speaks to 443 unless a target says otherwise.
 pub const DEFAULT_PORT: u16 = 443;
 
@@ -15,7 +17,8 @@ pub const DEFAULT_PORT: u16 = 443;
 pub const KNOWN_IPS_RECORDED: &str = "2026-11-14";
 
 /// What a target is used for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Role {
     /// A service whose reachability is the point of the measurement.
     Service,
@@ -24,7 +27,7 @@ pub enum Role {
 }
 
 /// One thing to probe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Target {
     pub domain: String,
     pub port: u16,

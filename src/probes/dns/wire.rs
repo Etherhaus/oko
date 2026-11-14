@@ -46,6 +46,12 @@ impl Rcode {
     }
 }
 
+impl serde::Serialize for Rcode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 impl fmt::Display for Rcode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

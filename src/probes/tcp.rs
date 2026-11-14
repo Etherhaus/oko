@@ -9,30 +9,49 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 
 use super::dns::IpSource;
+use crate::format;
 
 /// How many addresses of one target to try. A CDN can return a dozen; trying
 /// every one of them turns a probe into a scan.
 pub const MAX_ADDRESSES_PER_TARGET: usize = 4;
 
 /// What happened when we tried to connect.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TcpOutcome {
     /// The handshake completed.
-    Connected { elapsed: Duration },
+    Connected {
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
     /// The peer answered with a reset.
-    Refused { elapsed: Duration },
+    Refused {
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
     /// Nothing came back before the timeout.
-    Timeout { elapsed: Duration },
+    Timeout {
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
     /// The operating system has no route to this address. On a host without
     /// IPv6 this is what every IPv6 address reports, and it says nothing about
     /// blocking, so it is kept apart from a failure.
-    NoRoute { elapsed: Duration },
+    NoRoute {
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
     /// Anything else the operating system reported.
-    Failed { reason: String, elapsed: Duration },
+    Failed {
+        reason: String,
+        #[serde(serialize_with = "crate::json::millis")]
+        elapsed: Duration,
+    },
 }
 
 impl TcpOutcome {
@@ -49,10 +68,22 @@ impl TcpOutcome {
     pub fn is_connected(&self) -> bool {
         matches!(self, TcpOutcome::Connected { .. })
     }
+
+    /// The outcome in plain words, for the report and the verdict facts.
+    pub fn describe(&self) -> String {
+        let elapsed = format::duration(self.elapsed());
+        match self {
+            TcpOutcome::Connected { .. } => format!("connected ({elapsed})"),
+            TcpOutcome::Refused { .. } => format!("refused ({elapsed})"),
+            TcpOutcome::Timeout { .. } => format!("timed out ({elapsed})"),
+            TcpOutcome::NoRoute { .. } => format!("no route from this host ({elapsed})"),
+            TcpOutcome::Failed { reason, .. } => format!("failed: {reason} ({elapsed})"),
+        }
+    }
 }
 
 /// One connect attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TcpProbe {
     pub domain: String,
     pub ip: IpAddr,
