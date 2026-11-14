@@ -156,7 +156,7 @@ fn steps_for(row: &Row, strings: &Strings) -> Vec<Step> {
             (strings.step_tunnel, strings.note_pending_tunnel),
         ]
         .into_iter()
-        .map(|(name, note)| step(name, strings.badge_none, note, 4))
+        .map(|(name, note)| step(name, strings.res_na, note, 4))
         .collect();
     };
     let mut steps = Vec::new();
@@ -315,13 +315,15 @@ impl Status {
     }
 }
 
-/// `2026-11-14 21:42 · 3 min 12 s · 24 targets`.
+/// The line under the state: when the run happened, how long it took, and
+/// what it covered. The mockup writes the count in the small word — the
+/// panel's «Цели» capital would read as a leak.
 fn run_line(at: &str, seconds: u64, count: usize, strings: &Strings) -> String {
     format!(
         "{} · {} · {count} {}",
         stamp(at),
         human_seconds(seconds, strings),
-        strings.targets
+        strings.run_count
     )
 }
 
@@ -758,23 +760,26 @@ fn dashboard(ui: &AppWindow, app: &App, strings: &Strings) {
     let _ = strings;
 }
 
-/// The status bar: what the run was given, in the words of a boot log.
+/// The status bar: what the run was given, in the words of a boot log. The
+/// keys ("tunnel", "timeout", …) are drawn by the window in the accent color;
+/// here go the values, plus whether the tunnel is known to work.
 fn status_bar(ui: &AppWindow, app: &App) {
     let proxy = app.socks5.trim();
-    let tunnel = if proxy.is_empty() {
-        "—".to_string()
-    } else if app.report.as_ref().and_then(|report| report.tunnel.as_ref()).is_some() {
-        format!("{proxy} ok")
+    let tunnel_ok = app.report.as_ref().and_then(|report| report.tunnel.as_ref()).is_some();
+    ui.set_sb_tunnel(if proxy.is_empty() {
+        "—".into()
+    } else if tunnel_ok {
+        format!("{proxy} ok").into()
     } else {
-        proxy.to_string()
-    };
-    ui.set_sb_tunnel(format!("tunnel {tunnel}").into());
-    ui.set_sb_timeout(format!("timeout {}s", app.timeout).into());
-    ui.set_sb_probes(format!("probes {}/target", run::PROBES_PER_TARGET).into());
+        proxy.into()
+    });
+    ui.set_sb_tunnel_ok(!proxy.is_empty() && tunnel_ok);
+    ui.set_sb_timeout(format!("{}s", app.timeout).into());
+    ui.set_sb_probes(format!("{}/target", run::PROBES_PER_TARGET).into());
     ui.set_sb_run(
         match app.config.last() {
-            Some(last) => format!("run {}s", last.seconds),
-            None => "run —".to_string(),
+            Some(last) => format!("{}s", last.seconds),
+            None => "—".to_string(),
         }
         .into(),
     );
@@ -801,8 +806,14 @@ fn inspector(ui: &AppWindow, app: &App, strings: &Strings) {
     let kind = shown.map(|(kind, _)| kind).unwrap_or("");
     ui.set_steps(ModelRc::new(VecModel::from(steps)));
     ui.set_facts(ModelRc::new(VecModel::from(facts)));
-    ui.set_detail_title(row.target.label().into());
-    ui.set_detail_badge(format!("{} — {}", badge(kind, strings), why(kind, strings)).into());
+    // The mockup names the target the way the table does, without the port.
+    ui.set_detail_title(row.target.domain.clone().into());
+    // An unprobed target has no verdict word yet: only the plain fact.
+    ui.set_detail_badge(if kind.is_empty() {
+        why(kind, strings).into()
+    } else {
+        format!("{} — {}", badge(kind, strings), why(kind, strings)).into()
+    });
     ui.set_detail_level(shown.map(|(_, level)| level_code(level)).unwrap_or(4));
 }
 

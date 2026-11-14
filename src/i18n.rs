@@ -101,7 +101,7 @@ impl Strings {
 labels! {
     // The run header.
     ready, set_ready => ("Ready to check", "Готов к проверке"),
-    checking, set_checking => ("Checking", "Проверка"),
+    checking, set_checking => ("Running…", "Проверяю…"),
     done, set_done => ("Run complete", "Прогон завершён"),
     check, set_check => ("Check", "Проверить"),
     control_dead, set_control_dead => (
@@ -310,6 +310,9 @@ labels! {
     export_failed, set_export_failed => ("Could not write", "Не удалось записать"),
     seconds, set_seconds => ("s", "с"),
     minutes, set_minutes => ("min", "мин"),
+
+    // The run's own count of targets, in the lowercase of the mockup.
+    run_count, set_run_count => ("targets", "целей"),
 }
 
 #[cfg(test)]

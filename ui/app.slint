@@ -228,6 +228,9 @@ export global Labels {
     in property <string> export-failed;
     in property <string> seconds;
     in property <string> minutes;
+
+    // The run header's count of targets, in the mockup's lowercase.
+    in property <string> run-count;
 }
 
 // The eye of the title bar: the pupil follows the cursor.
@@ -605,12 +608,6 @@ component Wall inherits Rectangle {
             horizontal-stretch: root.unknown;
             visible: root.unknown > 0;
         }
-        Rectangle {
-            background: Theme.line;
-            border-radius: 4px;
-            horizontal-stretch: 1;
-            visible: root.ok + root.bad + root.unknown == 0;
-        }
     }
 }
 
@@ -648,7 +645,7 @@ component TableRow inherits Rectangle {
     in property <bool> selected;
     callback select();
 
-    height: 42px;
+    height: 38px;
     border-radius: Theme.radius;
     background: root.selected ? Theme.surface : (touch.has-hover ? Theme.surface : transparent);
     opacity: root.item.pending ? 0.35 : 1;
@@ -704,7 +701,7 @@ component TableRow inherits Rectangle {
         Badge {
             text: root.item.verdict;
             level: root.item.level;
-            width: 104px;
+            width: 116px;
         }
 
         Text {
@@ -712,7 +709,7 @@ component TableRow inherits Rectangle {
             color: Theme.t3;
             font-family: Theme.mono;
             font-size: 11px;
-            width: 72px;
+            width: 84px;
             horizontal-alignment: right;
             vertical-alignment: center;
         }
@@ -811,13 +808,20 @@ component TargetItem inherits Rectangle {
             overflow: elide;
             horizontal-stretch: 1;
         }
-        if root.item.custom: Text {
-            text: "×";
-            color: remove-touch.has-hover ? Theme.bad : Theme.t3;
-            font-size: 13px;
-            vertical-alignment: center;
+        if root.item.custom: Rectangle {
             width: 14px;
-            horizontal-alignment: center;
+            Path {
+                width: 10px;
+                height: 10px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                viewbox-width: 16;
+                viewbox-height: 16;
+                commands: "M3 3l10 10M13 3L3 13";
+                stroke: remove-touch.has-hover ? Theme.bad : Theme.t3;
+                stroke-width: 2.2px;
+                fill: transparent;
+            }
 
             remove-touch := TouchArea {
                 clicked => {
@@ -828,13 +832,79 @@ component TargetItem inherits Rectangle {
     }
 }
 
+// The tone mark of a probe card: pass, fail, warn and the dash of "no data",
+// all drawn as paths and rectangles — never as font glyphs, which fall out of
+// style. The check is the canonical checkbox tick of the mockup; the dash and
+// the cross are the window's other marks at the same weight.
+component StepMark inherits Rectangle {
+    in property <int> tone;
+
+    width: 11px;
+    height: 13px;
+
+    Path {
+        width: 11px;
+        height: 11px;
+        y: 1px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M3 8.5l3.4 3.4L13 5";
+        stroke: Theme.ok;
+        stroke-width: 2.6px;
+        fill: transparent;
+        visible: root.tone == 0;
+    }
+    Path {
+        width: 11px;
+        height: 11px;
+        y: 1px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M3 3l10 10M13 3L3 13";
+        stroke: Theme.bad;
+        stroke-width: 2.6px;
+        fill: transparent;
+        visible: root.tone == 1;
+    }
+    // The exclamation: a bar and its dot, drawn rather than typed.
+    Rectangle {
+        x: (parent.width - 2.4px) / 2;
+        y: 1px;
+        width: 2.4px;
+        height: 6.5px;
+        border-radius: 1.2px;
+        background: Theme.warn;
+        visible: root.tone == 2;
+    }
+    Rectangle {
+        x: (parent.width - 2.6px) / 2;
+        y: 9.4px;
+        width: 2.6px;
+        height: 2.6px;
+        border-radius: 1.3px;
+        background: Theme.warn;
+        visible: root.tone == 2;
+    }
+    Path {
+        width: 11px;
+        height: 11px;
+        y: 1px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M3 8h10";
+        stroke: Theme.na;
+        stroke-width: 2.6px;
+        fill: transparent;
+        visible: root.tone >= 3;
+    }
+}
+
 // One probe of the inspector.
 component StepCard inherits Rectangle {
     in property <Step> step;
 
     min-width: 88px;
     horizontal-stretch: 1;
-    height: 58px;
     border-radius: Theme.radius;
     background: Theme.bg;
     border-width: 1px;
@@ -859,11 +929,9 @@ component StepCard inherits Rectangle {
             alignment: LayoutAlignment.start;
             cross-axis-alignment: center;
 
-            Text {
-                text: root.step.tone == 0 ? "✓" : (root.step.tone == 1 ? "✗" : (root.step.tone == 2 ? "!" : "—"));
-                color: root.step.tone == 0 ? Theme.ok : (root.step.tone == 1 ? Theme.bad : (root.step.tone == 2 ? Theme.warn : Theme.na));
-                font-size: 11.5px;
-                font-weight: 600;
+            StepMark {
+                tone: root.step.tone;
+                vertical-stretch: 0;
             }
             Text {
                 text: root.step.result;
@@ -877,7 +945,7 @@ component StepCard inherits Rectangle {
             text: root.step.note;
             color: Theme.t3;
             font-size: 10px;
-            overflow: elide;
+            wrap: word-wrap;
         }
     }
 }
@@ -940,8 +1008,10 @@ export component AppWindow inherits Window {
     in-out property <string> toast-text;
     in-out property <bool> toast-visible: false;
 
-    // The status bar.
+    // The status bar: a boot log. The keys are the fixed English words, the
+    // values come from the Rust side; `tunnel-ok` colors the tunnel's "ok".
     in-out property <string> sb-tunnel;
+    in-out property <bool> sb-tunnel-ok: false;
     in-out property <string> sb-timeout;
     in-out property <string> sb-probes;
     in-out property <string> sb-run;
@@ -1073,23 +1143,29 @@ export component AppWindow inherits Window {
                                 padding-left: 8px;
                                 spacing: 1px;
 
-                                for entry in root.list: TargetItem {
-                                    item: entry;
-                                    toggle => {
-                                        if entry.header {
-                                            root.toggle-group(entry.group);
-                                        } else {
-                                            root.toggle(entry.index);
+                                // A category header takes a breath above it, as
+                                // the mockup's cat-head does (7px).
+                                for entry in root.list: VerticalLayout {
+                                    padding-top: entry.header ? 7px : 0px;
+
+                                    TargetItem {
+                                        item: entry;
+                                        toggle => {
+                                            if entry.header {
+                                                root.toggle-group(entry.group);
+                                            } else {
+                                                root.toggle(entry.index);
+                                            }
                                         }
-                                    }
-                                    collapse => {
-                                        root.toggle-collapse(entry.group);
-                                    }
-                                    select => {
-                                        root.select(entry.index);
-                                    }
-                                    remove => {
-                                        root.remove(entry.index);
+                                        collapse => {
+                                            root.toggle-collapse(entry.group);
+                                        }
+                                        select => {
+                                            root.select(entry.index);
+                                        }
+                                        remove => {
+                                            root.remove(entry.index);
+                                        }
                                     }
                                 }
                             }
@@ -1355,13 +1431,13 @@ export component AppWindow inherits Window {
                                 text: Labels.col-verdict;
                                 color: Theme.t3;
                                 font-size: 10.5px;
-                                width: 104px;
+                                width: 116px;
                             }
                             Text {
                                 text: Labels.col-time;
                                 color: Theme.t3;
                                 font-size: 10.5px;
-                                width: 72px;
+                                width: 84px;
                                 horizontal-alignment: right;
                             }
                         }
@@ -1421,7 +1497,7 @@ export component AppWindow inherits Window {
                         x: 12px;
                         y: parent.height - self.height - 8px;
                         width: parent.width - 24px;
-                        height: inspector.preferred-height + 24px;
+                        height: inspector.preferred-height;
                         background: Theme.surface;
                         border-radius: 10px;
                         border-width: 1px;
@@ -1501,7 +1577,8 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // ── the status bar: what the run was given ──
+            // ── the status bar: what the run was given. The keys carry the
+            // accent, the values stay muted, the tunnel's "ok" speaks green ──
             Rectangle {
                 height: 26px;
                 background: Theme.panel;
@@ -1516,34 +1593,85 @@ export component AppWindow inherits Window {
                     spacing: 14px;
                     cross-axis-alignment: center;
 
-                    Text {
-                        text: root.sb-tunnel;
-                        color: Theme.t3;
-                        font-family: Theme.mono;
-                        font-size: 10.5px;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 5px;
+
+                        Text {
+                            text: "tunnel";
+                            color: Theme.accent;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.sb-tunnel;
+                            color: Theme.t3;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
+                        if root.sb-tunnel-ok: Text {
+                            text: "ok";
+                            color: Theme.ok;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
                     }
-                    Text {
-                        text: root.sb-timeout;
-                        color: Theme.t3;
-                        font-family: Theme.mono;
-                        font-size: 10.5px;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 5px;
+
+                        Text {
+                            text: "timeout";
+                            color: Theme.accent;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.sb-timeout;
+                            color: Theme.t3;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
                     }
-                    Text {
-                        text: root.sb-probes;
-                        color: Theme.t3;
-                        font-family: Theme.mono;
-                        font-size: 10.5px;
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        spacing: 5px;
+
+                        Text {
+                            text: "probes";
+                            color: Theme.accent;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.sb-probes;
+                            color: Theme.t3;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
                     }
-                    Text {
-                        text: root.sb-run;
-                        color: Theme.t3;
-                        font-family: Theme.mono;
-                        font-size: 10.5px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 5px;
+
+                        Text {
+                            text: "run";
+                            color: Theme.accent;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.sb-run;
+                            color: Theme.t3;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
                     }
                     Text {
                         text: root.sb-version;
@@ -1630,14 +1758,17 @@ export component AppWindow inherits Window {
                                 background: minus.has-hover ? Theme.surface-2 : transparent;
                                 border-radius: 6px;
 
-                                Text {
-                                    text: "−";
-                                    color: Theme.t2;
-                                    font-size: 13px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    width: parent.width;
-                                    height: parent.height;
+                                Path {
+                                    width: 12px;
+                                    height: 12px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    viewbox-width: 16;
+                                    viewbox-height: 16;
+                                    commands: "M3 8h10";
+                                    stroke: minus.has-hover ? Theme.text : Theme.t2;
+                                    stroke-width: 1.8px;
+                                    fill: transparent;
                                 }
                                 minus := TouchArea {
                                     clicked => {
@@ -1659,14 +1790,17 @@ export component AppWindow inherits Window {
                                 background: plus.has-hover ? Theme.surface-2 : transparent;
                                 border-radius: 6px;
 
-                                Text {
-                                    text: "+";
-                                    color: Theme.t2;
-                                    font-size: 13px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                    width: parent.width;
-                                    height: parent.height;
+                                Path {
+                                    width: 12px;
+                                    height: 12px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    viewbox-width: 16;
+                                    viewbox-height: 16;
+                                    commands: "M8 3v10M3 8h10";
+                                    stroke: plus.has-hover ? Theme.text : Theme.t2;
+                                    stroke-width: 1.8px;
+                                    fill: transparent;
                                 }
                                 plus := TouchArea {
                                     clicked => {
