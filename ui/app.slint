@@ -1,5 +1,10 @@
-// The Oko window: the target table on the left, the probe details on the
-// right, the settings and the run button above them.
+// The Oko window.
+//
+// One screen, three bands: the header (who this is, the global switches), the
+// run band (the one action, its progress, the summary of the last run), and the
+// two panes (the targets, the details of the chosen one). Settings and the
+// export live behind the header menu, so the screen holds only what a run
+// needs.
 //
 // Every user-visible string comes from the `Labels` global, which the Rust side
 // fills from `src/i18n.rs`. The palette lives in `Theme`; the window frame is
@@ -7,14 +12,15 @@
 
 import { ScrollView } from "std-widgets.slint";
 
-// One row of the target table.
+// One row of the target list: a group header or a target.
 export struct TargetRow {
     // The row's place in the target list; -1 on a group header.
     index: int,
     // The group a header stands for, so the header's box can tick the whole
-    // group.
+    // group and its click can fold it.
     group: int,
-    // A header row: the category's name and a box that ticks the group.
+    // A header row: the category's name, how many of its targets are ticked,
+    // and a box that ticks the group.
     header: bool,
     domain: string,
     checked: bool,
@@ -29,6 +35,10 @@ export struct TargetRow {
     running: bool,
     // A target the user added: it can be removed, and the list marks it.
     custom: bool,
+    // Header only: "ticked/total" of the group.
+    count: string,
+    // Header only: the group is folded, its targets are not in the model.
+    collapsed: bool,
 }
 
 export global Labels {
@@ -36,6 +46,7 @@ export global Labels {
     in property <string> targets;
     in property <string> details;
     in property <string> details-empty;
+    in property <string> details-not-probed;
     in property <string> check;
     in property <string> check-all;
     in property <string> check-none;
@@ -78,6 +89,9 @@ export global Labels {
     in property <string> category-encyclopedia;
     in property <string> category-development;
     in property <string> category-custom;
+    in property <string> category-news;
+    in property <string> category-search;
+    in property <string> category-ai;
 
     // Targets the user adds.
     in property <string> add-domain;
@@ -102,6 +116,17 @@ export global Labels {
 
     // The watchdog.
     in property <string> interrupted;
+
+    // The menu, the settings dialog and the panes.
+    in property <string> menu;
+    in property <string> settings;
+    in property <string> close;
+    in property <string> done-settings;
+    in property <string> export;
+    in property <string> targets-count;
+    in property <string> checked-count;
+    in property <string> collapse;
+    in property <string> expand;
 }
 
 export global Theme {
@@ -179,29 +204,14 @@ component Card inherits Rectangle {
     }
 }
 
-// A small rounded label, used for the verdict in the table.
-component Pill inherits Rectangle {
-    in property <string> text;
-    in property <color> ink: Theme.dim;
-    in property <color> fill: transparent;
-
-    height: 22px;
-    width: label.preferred-width + 16px;
-    border-radius: 7px;
-    background: root.fill;
-    border-width: 1px;
-    border-color: root.ink.transparentize(0.72);
-
-    label := Text {
-        text: root.text;
-        color: root.ink;
-        font-family: Theme.mono;
-        font-size: 11px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        width: parent.width;
-        height: parent.height;
-    }
+// The small mono label that names a block: "ЦЕЛИ", "ДЕТАЛИ".
+component Eyebrow inherits Text {
+    color: Theme.dim;
+    font-family: Theme.mono;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.9px;
+    vertical-alignment: center;
 }
 
 // A flat button with a hairline border.
@@ -227,6 +237,24 @@ component GhostButton inherits Rectangle {
         width: parent.width;
         height: parent.height;
     }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A word that acts as a button: "все", "ничего". No border, no fill.
+component TextLink inherits Text {
+    in property <bool> enabled: true;
+    callback clicked();
+
+    color: touch.has-hover && root.enabled ? Theme.accent-ink : Theme.dim;
+    font-size: 11px;
+    vertical-alignment: center;
+    opacity: root.enabled ? 1 : 0.45;
 
     touch := TouchArea {
         enabled: root.enabled;
@@ -304,7 +332,6 @@ component Segmented inherits Rectangle {
     callback pick-second();
 
     height: 30px;
-    width: 148px;
     border-radius: 9px;
     background: Theme.field;
     border-width: 1px;
@@ -383,6 +410,7 @@ component Stepper inherits Rectangle {
         Text {
             text: "\{root.value}";
             color: Theme.text;
+            font-family: Theme.mono;
             font-size: 13px;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -433,7 +461,7 @@ component Field inherits Rectangle {
     }
 }
 
-// The checkbox of one table row.
+// The checkbox of one row.
 component Check inherits Rectangle {
     in property <bool> checked;
     callback toggled();
@@ -466,15 +494,252 @@ component Check inherits Rectangle {
     }
 }
 
-// One row of the target table.
+// The change of one counter against the previous run, as a small badge: it
+// must not read as part of the label next to it.
+component Delta inherits Rectangle {
+    in property <string> text;
+
+    height: 15px;
+    width: delta-label.preferred-width + 10px;
+    border-radius: 5px;
+    background: Theme.field;
+
+    delta-label := Text {
+        text: root.text;
+        color: Theme.dim;
+        font-family: Theme.mono;
+        font-size: 9px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+// A 24px square button with a glyph: the remove mark of a custom target.
+component MiniButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+    background: touch.has-hover ? Theme.surface-2 : transparent;
+
+    Text {
+        text: root.text;
+        color: touch.has-hover ? Theme.bad : Theme.dim;
+        font-size: 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The header's menu button: three dots, drawn rather than typed, because the
+// UI font has no glyph for them.
+component MenuButton inherits Rectangle {
+    callback clicked();
+
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: touch.has-hover || root.open ? Theme.surface-2 : transparent;
+    border-width: 1px;
+    border-color: touch.has-hover || root.open ? Theme.line : transparent;
+
+    in property <bool> open: false;
+
+    HorizontalLayout {
+        alignment: center;
+        cross-axis-alignment: center;
+        spacing: 3px;
+
+        Rectangle {
+            width: 3px;
+            height: 3px;
+            border-radius: 2px;
+            background: Theme.text-2;
+        }
+        Rectangle {
+            width: 3px;
+            height: 3px;
+            border-radius: 2px;
+            background: Theme.text-2;
+        }
+        Rectangle {
+            width: 3px;
+            height: 3px;
+            border-radius: 2px;
+            background: Theme.text-2;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// One line of the header menu.
+component MenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    border-radius: 8px;
+    background: touch.has-hover && root.enabled ? Theme.surface-2 : transparent;
+    opacity: root.enabled ? 1 : 0.4;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.text;
+        color: Theme.text-2;
+        font-size: 12px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The bar of a dialog: the niri window, title in the middle, close on the right.
+component TitleBar inherits Rectangle {
+    in property <string> title;
+    callback close();
+
+    height: 40px;
+    background: Theme.surface-2;
+
+    Rectangle {
+        y: parent.height - 1px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.line;
+    }
+
+    Text {
+        x: 44px;
+        width: parent.width - 88px;
+        height: parent.height;
+        text: root.title;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    Rectangle {
+        x: parent.width - self.width - 10px;
+        y: (parent.height - self.height) / 2;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: close-touch.has-hover ? Theme.accent : Theme.surface-3;
+
+        Text {
+            text: "×";
+            color: close-touch.has-hover ? Theme.on-accent : Theme.dim;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: parent.width;
+            height: parent.height;
+        }
+
+        close-touch := TouchArea {
+            clicked => {
+                root.close();
+            }
+        }
+    }
+}
+
+// A dimmed overlay with a centered window of its own. Escape cancels it.
+component Modal inherits Rectangle {
+    in property <string> title;
+    callback cancel();
+
+    background: #000000B8;
+
+    TouchArea {
+        clicked => {
+            root.cancel();
+        }
+    }
+
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            width: min(420px, root.width - 40px);
+            height: card.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: Theme.surface;
+            border-radius: Theme.radius-win;
+            border-width: 3px;
+            border-color: Theme.accent;
+            drop-shadow-color: #00000099;
+            drop-shadow-blur: 40px;
+            drop-shadow-offset-y: 18px;
+            clip: true;
+
+            card := VerticalLayout {
+                TitleBar {
+                    title: root.title;
+                    close => {
+                        root.cancel();
+                    }
+                }
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 14px;
+                    @children
+                }
+            }
+        }
+    }
+}
+
+// One row of the target list: a group header or a target.
 component TargetItem inherits Rectangle {
     in property <TargetRow> item;
     in property <bool> selected;
     callback toggle();
     callback select();
     callback remove();
+    callback collapse();
 
-    height: root.item.header ? 26px : 54px;
+    height: root.item.header ? 28px : 46px;
     border-radius: Theme.radius-sm;
     background: root.item.header ? transparent : (root.selected ? Theme.accent-soft : (touch.has-hover ? Theme.surface-2 : transparent));
 
@@ -482,25 +747,29 @@ component TargetItem inherits Rectangle {
     // remove button get their clicks first.
     touch := TouchArea {
         clicked => {
-            root.select();
+            if root.item.header {
+                root.collapse();
+            } else {
+                root.select();
+            }
         }
     }
 
     if root.item.header: HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 10px;
+        padding-left: 2px;
+        padding-right: 6px;
+        spacing: 8px;
         // `alignment` is the main axis (horizontal here); the cross axis is
         // what centres the box and the label vertically.
-        alignment: start;
         cross-axis-alignment: center;
 
-        Check {
-            checked: root.item.checked;
-            vertical-stretch: 0;
-            toggled => {
-                root.toggle();
-            }
+        Text {
+            text: root.item.collapsed ? "▸" : "▾";
+            color: Theme.dim;
+            font-size: 9px;
+            width: 10px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
         Text {
             text: root.item.domain;
@@ -508,14 +777,31 @@ component TargetItem inherits Rectangle {
             font-size: 11px;
             font-weight: 600;
             vertical-alignment: center;
+        }
+        Text {
+            text: root.item.count;
+            color: Theme.dim;
+            font-family: Theme.mono;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+        Rectangle {
             horizontal-stretch: 1;
+        }
+        Check {
+            checked: root.item.checked;
+            vertical-stretch: 0;
+            toggled => {
+                root.toggle();
+            }
         }
     }
 
     if !root.item.header: HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: 2px;
+        padding-right: 6px;
         spacing: 10px;
+        cross-axis-alignment: center;
 
         Check {
             checked: root.item.checked;
@@ -526,38 +812,43 @@ component TargetItem inherits Rectangle {
         }
 
         VerticalLayout {
-            spacing: 2px;
+            spacing: 1px;
             vertical-stretch: 1;
             alignment: center;
 
             Text {
                 text: root.item.domain;
                 color: Theme.text;
-                font-size: 14px;
+                font-size: 13px;
                 vertical-alignment: center;
+                overflow: elide;
             }
             Text {
-                text: root.item.running ? Labels.in-progress : (root.item.verdict == "" ? Labels.not-checked : (root.item.diff == "" ? root.item.level-text : root.item.level-text + " · " + root.item.diff));
-                color: Theme.dim;
-                font-size: 11px;
+                text: root.item.running ? Labels.in-progress : (root.item.verdict == "" ? Labels.not-checked : root.item.level-text);
+                color: root.item.running ? Theme.accent-ink : (root.item.verdict == "" ? Theme.dim : (root.item.level == 0 ? Theme.ok : (root.item.level == 2 ? Theme.bad : Theme.warn)));
+                font-size: 10px;
                 overflow: elide;
                 vertical-alignment: center;
             }
         }
 
-        if root.item.custom: GhostButton {
+        // The technical name of the verdict: the human word is on the left.
+        Text {
+            text: root.item.verdict;
+            color: Theme.dim;
+            font-family: Theme.mono;
+            font-size: 10px;
+            width: 92px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        if root.item.custom: MiniButton {
             text: "×";
-            vertical-stretch: 0;
             clicked => {
                 root.remove();
             }
-        }
-
-        Pill {
-            text: root.item.verdict == "" ? "—" : root.item.verdict;
-            ink: root.item.level == 0 ? Theme.ok : (root.item.level == 2 ? Theme.bad : (root.item.level == 4 ? Theme.dim : Theme.warn));
-            fill: root.item.level == 0 ? Theme.ok-soft : (root.item.level == 2 ? Theme.bad-soft : (root.item.level == 4 ? transparent : Theme.warn-soft));
-            vertical-stretch: 0;
         }
     }
 }
@@ -582,13 +873,20 @@ export component AppWindow inherits Window {
     in-out property <float> progress: 0;
     in-out property <string> status;
     in-out property <string> detail;
+    in-out property <string> detail-title;
+    in-out property <string> detail-mark;
     in-out property <string> export-status;
+    in-out property <bool> export-enabled: false;
     in-out property <int> timeout-value: 5;
     in-out property <string> socks5-text;
     in-out property <string> lang: "en";
     in-out property <bool> frame: true;
     in-out property <bool> adding: false;
     in-out property <string> add-text;
+    in-out property <bool> settings-open: false;
+    in-out property <bool> menu-open: false;
+    in-out property <string> targets-count;
+    in-out property <string> checked-count;
     in-out property <string> dash-ok: "0";
     in-out property <string> dash-blocked: "0";
     in-out property <string> dash-unknown: "0";
@@ -601,6 +899,7 @@ export component AppWindow inherits Window {
 
     callback toggle(int);
     callback toggle-group(int);
+    callback toggle-collapse(int);
     callback select(int);
     callback remove(int);
     callback check-all();
@@ -620,6 +919,10 @@ export component AppWindow inherits Window {
     callback cancel-add();
     callback add-text-edited(string);
     callback add-domain();
+    callback open-settings();
+    callback close-settings();
+    callback toggle-menu();
+    callback close-menu();
 
     Rectangle {
         x: root.frame-width;
@@ -628,28 +931,33 @@ export component AppWindow inherits Window {
         height: parent.height - 2 * root.frame-width;
         border-radius: root.frame ? Theme.radius-win : 0px;
         background: Theme.bg-glow;
+        clip: true;
 
         VerticalLayout {
             padding: 16px;
-            spacing: 10px;
+            spacing: 12px;
 
-            // Header: the name, the purpose, the theme and the language.
+            // The header: who this is, and the switches that are not about a
+            // run.
             HorizontalLayout {
-                spacing: 12px;
+                height: 44px;
+                spacing: 10px;
+                cross-axis-alignment: center;
 
                 VerticalLayout {
-                    spacing: 2px;
+                    spacing: 1px;
+                    vertical-stretch: 0;
 
                     Text {
                         text: "Oko";
                         color: Theme.text;
-                        font-size: 26px;
+                        font-size: 24px;
                         font-weight: 700;
                     }
                     Text {
                         text: Labels.subtitle;
                         color: Theme.dim;
-                        font-size: 12px;
+                        font-size: 11px;
                     }
                 }
 
@@ -658,6 +966,7 @@ export component AppWindow inherits Window {
                 }
 
                 Segmented {
+                    width: 132px;
                     first: Labels.dark;
                     second: Labels.light;
                     second-active: !Theme.dark;
@@ -669,6 +978,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 Segmented {
+                    width: 76px;
                     first: "RU";
                     second: "EN";
                     second-active: root.lang == "en";
@@ -679,266 +989,206 @@ export component AppWindow inherits Window {
                         root.pick-en();
                     }
                 }
+                MenuButton {
+                    open: root.menu-open;
+                    clicked => {
+                        root.toggle-menu();
+                    }
+                }
             }
 
-            // Settings and the run button.
+            // The run band: the one action, its progress, and the summary of
+            // the last run under it.
             Card {
+                height: 62px;
                 VerticalLayout {
                     padding: 12px;
-                    spacing: 8px;
+                    spacing: 6px;
 
-                    HorizontalLayout {
-                        spacing: 14px;
-
-                        VerticalLayout {
-                            spacing: 3px;
-
-                            Text {
-                                text: Labels.timeout;
-                                color: Theme.text-2;
-                                font-size: 12px;
-                            }
-                            Stepper {
-                                value: root.timeout-value;
-                                dec => {
-                                    root.timeout-dec();
-                                }
-                                inc => {
-                                    root.timeout-inc();
-                                }
-                            }
-                        }
-
-                        VerticalLayout {
-                            spacing: 3px;
-                            horizontal-stretch: 1;
-
-                            Text {
-                                text: Labels.socks5;
-                                color: Theme.text-2;
-                                font-size: 12px;
-                            }
-                            Field {
-                                text: root.socks5-text;
-                                placeholder: Labels.socks5-placeholder;
-                                edited(text) => {
-                                    root.socks5-edited(text);
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: center;
-
-                            Check {
-                                checked: root.frame;
-                                vertical-stretch: 0;
-                                toggled => {
-                                    root.toggle-frame();
-                                }
-                            }
-                            Text {
-                                text: Labels.frame;
-                                color: Theme.text-2;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 14px;
-
-                        Text {
-                            text: Labels.timeout-hint;
-                            color: Theme.dim;
-                            font-size: 11px;
-                            width: 140px;
-                            wrap: word-wrap;
-                        }
-                        Text {
-                            text: Labels.socks5-hint;
-                            color: Theme.dim;
-                            font-size: 11px;
-                            horizontal-stretch: 1;
-                            wrap: word-wrap;
-                        }
-                    }
-
-                    // Progress and the status line.
                     HorizontalLayout {
                         spacing: 12px;
+                        cross-axis-alignment: center;
+
+                        PrimaryButton {
+                            text: Labels.check;
+                            width: 150px;
+                            enabled: !root.running;
+                            clicked => {
+                                root.start();
+                            }
+                        }
 
                         Rectangle {
                             height: 6px;
                             border-radius: 3px;
                             background: Theme.field;
+                            border-width: 1px;
+                            border-color: Theme.line;
                             horizontal-stretch: 1;
                             vertical-stretch: 0;
 
+                            // Accent only while the run is live: a full accent
+                            // bar at rest reads as "still working".
                             Rectangle {
                                 width: parent.width * root.progress;
                                 height: parent.height;
                                 border-radius: 3px;
-                                background: Theme.accent;
+                                background: root.running ? Theme.accent : Theme.line;
                                 animate width { duration: Theme.motion; }
+                                animate background { duration: Theme.motion; }
                             }
                         }
+
                         Text {
                             text: root.status;
                             color: Theme.dim;
-                            font-size: 12px;
+                            font-size: 11px;
                             vertical-alignment: center;
-                            width: 320px;
+                            width: 190px;
+                            horizontal-alignment: right;
                             overflow: elide;
                         }
                     }
-
-                    PrimaryButton {
-                        text: Labels.check;
-                        enabled: !root.running;
-                        clicked => {
-                            root.start();
-                        }
-                    }
                 }
             }
 
-            // The dashboard: the counters of the last run and the delta to the
-            // run before it.
-            Card {
-                HorizontalLayout {
-                    padding: 12px;
-                    spacing: 20px;
-                    alignment: center;
+            // The dashboard: the counters of the last run, the delta to the one
+            // before it, and when it happened.
+            HorizontalLayout {
+                height: 20px;
+                spacing: 18px;
+                cross-axis-alignment: center;
 
-                    if root.dash-empty: Text {
-                        text: Labels.dash-empty;
+                if root.dash-empty: Text {
+                    text: Labels.dash-empty;
+                    color: Theme.dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                if !root.dash-empty: HorizontalLayout {
+                    spacing: 6px;
+                    cross-axis-alignment: end;
+
+                    Text {
+                        text: root.dash-ok;
+                        color: Theme.ok;
+                        font-family: Theme.mono;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: Labels.dash-ok;
                         color: Theme.dim;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
+                        font-size: 11px;
                     }
+                    if root.dash-ok-delta != "": Delta {
+                        text: root.dash-ok-delta;
+                    }
+                }
+                if !root.dash-empty: HorizontalLayout {
+                    spacing: 6px;
+                    cross-axis-alignment: end;
 
-                    if !root.dash-empty: VerticalLayout {
-                        spacing: 0px;
-                        HorizontalLayout {
-                            spacing: 4px;
-                            alignment: end;
-                            Text {
-                                text: root.dash-ok;
-                                color: Theme.ok;
-                                font-size: 20px;
-                                font-weight: 700;
-                            }
-                            Text {
-                                text: root.dash-ok-delta;
-                                color: Theme.dim;
-                                font-size: 11px;
-                                vertical-alignment: bottom;
-                            }
-                        }
-                        Text {
-                            text: Labels.dash-ok;
-                            color: Theme.dim;
-                            font-size: 10px;
-                        }
+                    Text {
+                        text: root.dash-blocked;
+                        color: Theme.bad;
+                        font-family: Theme.mono;
+                        font-size: 15px;
+                        font-weight: 700;
                     }
-                    if !root.dash-empty: VerticalLayout {
-                        spacing: 0px;
-                        HorizontalLayout {
-                            spacing: 4px;
-                            alignment: end;
-                            Text {
-                                text: root.dash-blocked;
-                                color: Theme.bad;
-                                font-size: 20px;
-                                font-weight: 700;
-                            }
-                            Text {
-                                text: root.dash-blocked-delta;
-                                color: Theme.dim;
-                                font-size: 11px;
-                                vertical-alignment: bottom;
-                            }
-                        }
-                        Text {
-                            text: Labels.dash-blocked;
-                            color: Theme.dim;
-                            font-size: 10px;
-                        }
+                    Text {
+                        text: Labels.dash-blocked;
+                        color: Theme.dim;
+                        font-size: 11px;
                     }
-                    if !root.dash-empty: VerticalLayout {
-                        spacing: 0px;
-                        HorizontalLayout {
-                            spacing: 4px;
-                            alignment: end;
-                            Text {
-                                text: root.dash-unknown;
-                                color: Theme.warn;
-                                font-size: 20px;
-                                font-weight: 700;
-                            }
-                            Text {
-                                text: root.dash-unknown-delta;
-                                color: Theme.dim;
-                                font-size: 11px;
-                                vertical-alignment: bottom;
-                            }
-                        }
-                        Text {
-                            text: Labels.dash-unknown;
-                            color: Theme.dim;
-                            font-size: 10px;
-                        }
+                    if root.dash-blocked-delta != "": Delta {
+                        text: root.dash-blocked-delta;
                     }
+                }
+                if !root.dash-empty: HorizontalLayout {
+                    spacing: 6px;
+                    cross-axis-alignment: end;
 
-                    Rectangle {
-                        horizontal-stretch: 1;
+                    Text {
+                        text: root.dash-unknown;
+                        color: Theme.warn;
+                        font-family: Theme.mono;
+                        font-size: 15px;
+                        font-weight: 700;
                     }
+                    Text {
+                        text: Labels.dash-unknown;
+                        color: Theme.dim;
+                        font-size: 11px;
+                    }
+                    if root.dash-unknown-delta != "": Delta {
+                        text: root.dash-unknown-delta;
+                    }
+                }
 
-                    VerticalLayout {
-                        spacing: 2px;
-                        alignment: end;
-                        Text {
-                            text: root.dash-info;
-                            color: Theme.text-2;
-                            font-size: 11px;
-                            horizontal-alignment: right;
-                        }
-                        Text {
-                            text: root.dash-delta;
-                            color: Theme.dim;
-                            font-size: 11px;
-                            horizontal-alignment: right;
-                        }
-                    }
+                if root.dash-delta != "": Text {
+                    text: root.dash-delta;
+                    color: Theme.dim;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: root.dash-info;
+                    color: Theme.dim;
+                    font-family: Theme.mono;
+                    font-size: 10px;
+                    vertical-alignment: center;
                 }
             }
 
-            // The table and the details.
+            // The two panes: what to check on the left, what came back on the
+            // right.
             HorizontalLayout {
                 spacing: 12px;
                 vertical-stretch: 1;
 
                 Card {
-                    horizontal-stretch: 44;
+                    horizontal-stretch: 42;
                     min-height: 0px;
                     VerticalLayout {
                         padding: 12px;
                         spacing: 8px;
 
                         HorizontalLayout {
-                            spacing: 6px;
+                            height: 30px;
+                            spacing: 8px;
+                            cross-axis-alignment: center;
 
-                            Text {
+                            Eyebrow {
                                 text: Labels.targets;
-                                color: Theme.text;
-                                font-size: 14px;
-                                font-weight: 600;
+                            }
+                            Text {
+                                text: root.targets-count;
+                                color: Theme.dim;
+                                font-family: Theme.mono;
+                                font-size: 10px;
                                 vertical-alignment: center;
+                            }
+                            Rectangle {
                                 horizontal-stretch: 1;
+                            }
+                            TextLink {
+                                text: Labels.check-all;
+                                clicked => {
+                                    root.check-all();
+                                }
+                            }
+                            TextLink {
+                                text: Labels.check-none;
+                                clicked => {
+                                    root.check-none();
+                                }
                             }
                             GhostButton {
                                 text: Labels.add-domain;
@@ -946,22 +1196,11 @@ export component AppWindow inherits Window {
                                     root.begin-add();
                                 }
                             }
-                            GhostButton {
-                                text: Labels.check-all;
-                                clicked => {
-                                    root.check-all();
-                                }
-                            }
-                            GhostButton {
-                                text: Labels.check-none;
-                                clicked => {
-                                    root.check-none();
-                                }
-                            }
                         }
 
                         if root.adding: HorizontalLayout {
                             spacing: 6px;
+                            cross-axis-alignment: center;
 
                             Field {
                                 text: root.add-text;
@@ -985,23 +1224,6 @@ export component AppWindow inherits Window {
                             }
                         }
 
-                        HorizontalLayout {
-                            padding-left: 38px;
-                            padding-right: 10px;
-
-                            Text {
-                                text: Labels.col-target;
-                                color: Theme.dim;
-                                font-size: 11px;
-                                horizontal-stretch: 1;
-                            }
-                            Text {
-                                text: Labels.col-verdict;
-                                color: Theme.dim;
-                                font-size: 11px;
-                            }
-                        }
-
                         // The list scrolls inside the card: without the zero
                         // minimum the window would grow to fit every row.
                         ScrollView {
@@ -1009,7 +1231,7 @@ export component AppWindow inherits Window {
                             min-height: 0px;
 
                             VerticalLayout {
-                                spacing: 2px;
+                                spacing: 1px;
 
                                 for entry in root.rows: TargetItem {
                                     item: entry;
@@ -1021,10 +1243,11 @@ export component AppWindow inherits Window {
                                             root.toggle(entry.index);
                                         }
                                     }
+                                    collapse => {
+                                        root.toggle-collapse(entry.group);
+                                    }
                                     select => {
-                                        if !entry.header {
-                                            root.select(entry.index);
-                                        }
+                                        root.select(entry.index);
                                     }
                                     remove => {
                                         root.remove(entry.index);
@@ -1036,21 +1259,38 @@ export component AppWindow inherits Window {
                 }
 
                 Card {
-                    horizontal-stretch: 56;
+                    horizontal-stretch: 58;
                     min-height: 0px;
                     VerticalLayout {
                         padding: 12px;
                         spacing: 8px;
 
-                        Text {
-                            text: Labels.details;
-                            color: Theme.text;
-                            font-size: 14px;
-                            font-weight: 600;
+                        HorizontalLayout {
+                            height: 30px;
+                            spacing: 8px;
+                            cross-axis-alignment: center;
+
+                            Eyebrow {
+                                text: Labels.details;
+                            }
+                            Text {
+                                text: root.detail-title;
+                                color: Theme.accent-ink;
+                                font-family: Theme.mono;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.detail-mark;
+                                color: Theme.dim;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
                         }
 
                         if root.detail == "": Text {
-                            text: Labels.details-empty;
+                            text: root.selected >= 0 ? Labels.details-not-probed : Labels.details-empty;
                             color: Theme.dim;
                             font-size: 12px;
                             wrap: word-wrap;
@@ -1078,32 +1318,160 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
 
-            // Export.
-            HorizontalLayout {
-                spacing: 8px;
+        // The header menu: settings and the two exports. It closes on a click
+        // anywhere else.
+        if root.menu-open: Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
 
-                GhostButton {
+            TouchArea {
+                clicked => {
+                    root.close-menu();
+                }
+            }
+        }
+
+        if root.menu-open: Rectangle {
+            x: parent.width - self.width - 16px;
+            y: 64px;
+            width: 216px;
+            height: menu-layout.preferred-height;
+            background: Theme.surface;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.line;
+            drop-shadow-color: Theme.shadow;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 10px;
+
+            menu-layout := VerticalLayout {
+                padding: 6px;
+                spacing: 2px;
+
+                MenuItem {
+                    text: Labels.settings;
+                    clicked => {
+                        root.open-settings();
+                    }
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: Theme.line;
+                }
+
+                MenuItem {
                     text: Labels.export-text;
-                    enabled: root.detail != "";
+                    enabled: root.export-enabled;
                     clicked => {
                         root.export-text();
                     }
                 }
-                GhostButton {
+                MenuItem {
                     text: Labels.export-json;
-                    enabled: root.detail != "";
+                    enabled: root.export-enabled;
                     clicked => {
                         root.export-json();
                     }
                 }
+
+                if root.export-status != "": VerticalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 4px;
+                    padding-bottom: 4px;
+
+                    Text {
+                        text: root.export-status;
+                        color: Theme.dim;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // The settings dialog: the three things that change how a run behaves.
+        if root.settings-open: Modal {
+            title: Labels.settings;
+            cancel => {
+                root.close-settings();
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
                 Text {
-                    text: root.export-status;
+                    text: Labels.timeout;
+                    color: Theme.text-2;
+                    font-size: 12px;
+                }
+                Stepper {
+                    value: root.timeout-value;
+                    dec => {
+                        root.timeout-dec();
+                    }
+                    inc => {
+                        root.timeout-inc();
+                    }
+                }
+                Text {
+                    text: Labels.timeout-hint;
                     color: Theme.dim;
                     font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
+                Text {
+                    text: Labels.socks5;
+                    color: Theme.text-2;
+                    font-size: 12px;
+                }
+                Field {
+                    text: root.socks5-text;
+                    placeholder: Labels.socks5-placeholder;
+                    edited(text) => {
+                        root.socks5-edited(text);
+                    }
+                }
+                Text {
+                    text: Labels.socks5-hint;
+                    color: Theme.dim;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                cross-axis-alignment: center;
+
+                Check {
+                    checked: root.frame;
+                    vertical-stretch: 0;
+                    toggled => {
+                        root.toggle-frame();
+                    }
+                }
+                Text {
+                    text: Labels.frame;
+                    color: Theme.text-2;
+                    font-size: 12px;
                     vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
+                }
+            }
+
+            PrimaryButton {
+                text: Labels.done-settings;
+                clicked => {
+                    root.close-settings();
                 }
             }
         }

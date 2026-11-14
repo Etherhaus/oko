@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::config::{self, Config, RunSummary};
 use crate::i18n::{self, Lang, Strings};
@@ -71,6 +71,9 @@ impl Row {
                 .into(),
             running: self.running,
             custom: self.target.custom,
+            // Header-only fields: a target row leaves them empty.
+            count: "".into(),
+            collapsed: false,
         }
     }
 
@@ -160,6 +163,12 @@ struct App {
     socks5: String,
     adding: bool,
     add_text: String,
+    /// One flag per group of `Category::GROUPS`: a collapsed group shows its
+    /// header and hides its targets.
+    collapsed: Vec<bool>,
+    /// The settings dialog and the header menu are overlays, not screens.
+    settings_open: bool,
+    menu_open: bool,
     running: bool,
     /// The id of the run the window is waiting for. Events of any other run
     /// are stale and dropped.
@@ -213,6 +222,9 @@ impl App {
             socks5: config.socks5.clone(),
             adding: false,
             add_text: String::new(),
+            collapsed: vec![false; Category::GROUPS.len()],
+            settings_open: false,
+            menu_open: false,
             running: false,
             run_id: 0,
             running_rows: Vec::new(),
@@ -341,6 +353,18 @@ pub fn run() -> ExitCode {
         state.add_text = domain;
         add_domain(&ui, &mut state);
     }
+    if std::env::var("OKO_ADDING").is_ok() {
+        ui.invoke_begin_add();
+    }
+    if std::env::var("OKO_SETTINGS").is_ok() {
+        ui.invoke_open_settings();
+    }
+    if std::env::var("OKO_MENU").is_ok() {
+        ui.invoke_toggle_menu();
+    }
+    if let Ok(group) = std::env::var("OKO_COLLAPSE").unwrap_or_default().parse::<i32>() {
+        ui.invoke_toggle_collapse(group);
+    }
 
     // The engine's events land here, on the UI thread.
     let timer = slint::Timer::default();
@@ -381,7 +405,19 @@ pub fn run() -> ExitCode {
 /// Push the whole state into the window.
 fn refresh(ui: &AppWindow, app: &App) {
     let strings = app.strings();
-    ui.set_rows(ModelRc::new(VecModel::from(rows_model(app, &strings))));
+    let rows = rows_model(app, &strings);
+    // The rows are updated in place: replacing the model would rebuild every
+    // row of the list, and the list would lose its scroll position on each
+    // verdict of a run.
+    let model = ui.get_rows();
+    match model.as_any().downcast_ref::<VecModel<TargetRow>>() {
+        Some(vec) if vec.row_count() == rows.len() => {
+            for (index, row) in rows.into_iter().enumerate() {
+                vec.set_row_data(index, row);
+            }
+        }
+        _ => ui.set_rows(ModelRc::new(VecModel::from(rows))),
+    }
     ui.set_selected(app.selected.map(|index| index as i32).unwrap_or(-1));
     ui.set_detail(
         app.selected
@@ -396,6 +432,21 @@ fn refresh(ui: &AppWindow, app: &App) {
     ui.set_adding(app.adding);
     ui.set_add_text(app.add_text.clone().into());
     ui.set_frame(app.frame);
+    ui.set_settings_open(app.settings_open);
+    ui.set_menu_open(app.menu_open);
+    ui.set_export_enabled(app.report.is_some());
+    ui.set_export_status(app.export_status.clone().into());
+    ui.set_targets_count(app.rows.len().to_string().into());
+    ui.set_checked_count(app.rows.iter().filter(|row| row.checked).count().to_string().into());
+    let selected = app.selected.and_then(|index| app.rows.get(index));
+    ui.set_detail_title(selected.map(|row| row.target.label()).unwrap_or_default().into());
+    ui.set_detail_mark(
+        selected
+            .filter(|row| row.target.custom)
+            .map(|_| strings.custom_mark.to_string())
+            .unwrap_or_default()
+            .into(),
+    );
     dashboard(ui, app, &strings);
 }
 
@@ -414,6 +465,8 @@ fn rows_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
             continue;
         }
         let checked = indices.iter().all(|index| app.rows[*index].checked);
+        let ticked = indices.iter().filter(|index| app.rows[**index].checked).count();
+        let collapsed = app.collapsed.get(group).copied().unwrap_or(false);
         out.push(TargetRow {
             index: -1,
             group: group as i32,
@@ -426,7 +479,12 @@ fn rows_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
             diff: "".into(),
             running: false,
             custom: false,
+            count: format!("{ticked}/{}", indices.len()).into(),
+            collapsed,
         });
+        if collapsed {
+            continue;
+        }
         for index in indices {
             out.push(app.rows[index].view(index, strings));
         }
@@ -784,6 +842,68 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
         }
     });
 
+    ui.on_toggle_collapse({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move |group| {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            let Some(group) = usize::try_from(group)
+                .ok()
+                .filter(|group| *group < state.collapsed.len())
+            else {
+                return;
+            };
+            state.collapsed[group] = !state.collapsed[group];
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_open_settings({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            state.settings_open = true;
+            state.menu_open = false;
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_close_settings({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            state.settings_open = false;
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_toggle_menu({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            state.menu_open = !state.menu_open;
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_close_menu({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            state.menu_open = false;
+            refresh(&window, &state);
+        }
+    });
+
     ui.on_select({
         let ui = ui.as_weak();
         let app = app.clone();
@@ -850,6 +970,7 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
             let mut state = app.borrow_mut();
             state.adding = true;
             state.add_text.clear();
+            state.menu_open = false;
             refresh(&window, &state);
         }
     });

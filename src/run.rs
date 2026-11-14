@@ -32,8 +32,8 @@ pub const HTTP_PORT: u16 = 80;
 /// How many probe steps one target may spend a timeout on: the six probe kinds
 /// plus a margin for the addresses a target can resolve to. The watchdog is a
 /// net for a hang, not a performance limit, so the number is deliberately
-/// generous.
-const PROBES_PER_TARGET: u64 = 8;
+/// generous — a probe added later must not make the net cut an honest run.
+const PROBES_PER_TARGET: u64 = 10;
 /// The slack the watchdog adds on top of the sum.
 const WATCHDOG_SLACK: Duration = Duration::from_secs(30);
 

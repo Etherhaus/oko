@@ -95,6 +95,9 @@ impl Strings {
             Category::VideoHosting => self.category_video_hosting,
             Category::Social => self.category_social,
             Category::Messenger => self.category_messenger,
+            Category::News => self.category_news,
+            Category::Search => self.category_search,
+            Category::Ai => self.category_ai,
             Category::AudioStreaming => self.category_audio,
             Category::VideoStreaming => self.category_video,
             Category::Games => self.category_games,
@@ -132,6 +135,10 @@ labels! {
         "Select a target to see every probe and its outcome.",
         "Выберите цель, чтобы увидеть все пробы и их исходы."
     ),
+    details_not_probed, set_details_not_probed => (
+        "This target has not been checked yet: its probes appear after a run.",
+        "Цель ещё не проверена: пробы появятся после прогона."
+    ),
 
     // Settings
     check, set_check => ("Check", "Проверить"),
@@ -167,6 +174,9 @@ labels! {
     category_video_hosting, set_category_video_hosting => ("Video hosting", "Видеохостинги"),
     category_social, set_category_social => ("Social networks", "Соцсети"),
     category_messenger, set_category_messenger => ("Messengers", "Мессенджеры"),
+    category_news, set_category_news => ("News", "Новости"),
+    category_search, set_category_search => ("Search", "Поиск"),
+    category_ai, set_category_ai => ("AI assistants", "ИИ-ассистенты"),
     category_audio, set_category_audio => ("Audio streaming", "Аудиостриминг"),
     category_video, set_category_video => ("Video streaming", "Видеостриминг"),
     category_games, set_category_games => ("Games", "Игры"),
@@ -192,6 +202,17 @@ labels! {
 
     // Frame
     frame, set_frame => ("Window frame", "Рамка окна"),
+
+    // The menu, the settings dialog and the panes.
+    menu, set_menu => ("Menu", "Меню"),
+    settings, set_settings => ("Settings", "Настройки"),
+    close, set_close => ("Close", "Закрыть"),
+    done_settings, set_done_settings => ("Done", "Готово"),
+    export, set_export => ("Export", "Экспорт"),
+    targets_count, set_targets_count => ("targets", "целей"),
+    checked_count, set_checked_count => ("checked", "отмечено"),
+    collapse, set_collapse => ("Collapse the group", "Свернуть группу"),
+    expand, set_expand => ("Expand the group", "Развернуть группу"),
 
     // Dashboard
     dash_ok, set_dash_ok => ("reachable", "доступно"),

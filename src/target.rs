@@ -33,10 +33,13 @@ pub enum Role {
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     VideoHosting,
+    VideoStreaming,
+    AudioStreaming,
     Social,
     Messenger,
-    AudioStreaming,
-    VideoStreaming,
+    News,
+    Search,
+    Ai,
     Games,
     Encyclopedia,
     Development,
@@ -49,14 +52,18 @@ pub enum Category {
 }
 
 impl Category {
-    /// The order the window lists the groups in. Controls are not here: they
-    /// are not shown at all.
-    pub const GROUPS: [Category; 9] = [
+    /// The order the window lists the groups in: media first, then the ways
+    /// people talk, then the places they read, then the rest. Controls are not
+    /// here: they are not shown at all.
+    pub const GROUPS: [Category; 12] = [
         Category::VideoHosting,
+        Category::VideoStreaming,
+        Category::AudioStreaming,
         Category::Social,
         Category::Messenger,
-        Category::AudioStreaming,
-        Category::VideoStreaming,
+        Category::News,
+        Category::Search,
+        Category::Ai,
         Category::Games,
         Category::Encyclopedia,
         Category::Development,
@@ -91,134 +98,76 @@ const fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))
 }
 
-/// The starting list: eleven services that are commonly blocked or throttled
-/// in Russia, and three controls that are not.
+/// One service of the built-in list.
+fn service(domain: &str, category: Category, known: IpAddr) -> Target {
+    Target {
+        domain: domain.to_string(),
+        port: DEFAULT_PORT,
+        role: Role::Service,
+        known_ips: vec![known],
+        category,
+        custom: false,
+    }
+}
+
+/// One control of the built-in list.
+fn control_target(domain: &str, known: IpAddr) -> Target {
+    Target {
+        domain: domain.to_string(),
+        port: DEFAULT_PORT,
+        role: Role::Control,
+        known_ips: vec![known],
+        category: Category::Control,
+        custom: false,
+    }
+}
+
+/// The starting list: twenty-four services that are commonly blocked or
+/// throttled in Russia, and three controls that are not.
 ///
 /// The recorded addresses were resolved on 2026-11-14 from this network. They
 /// are a fallback for a broken resolver, nothing more.
 pub fn builtin() -> Vec<Target> {
     vec![
         // Video hosting.
-        Target {
-            domain: "youtube.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(172, 217, 19, 238)],
-            category: Category::VideoHosting,
-            custom: false,
-        },
+        service("youtube.com", Category::VideoHosting, ip(172, 217, 19, 238)),
         // Video streaming.
-        Target {
-            domain: "www.twitch.tv".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(146, 75, 122, 214)],
-            category: Category::VideoStreaming,
-            custom: false,
-        },
-        // Social networks.
-        Target {
-            domain: "x.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(162, 159, 140, 229)],
-            category: Category::Social,
-            custom: false,
-        },
-        Target {
-            domain: "facebook.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(31, 13, 72, 36)],
-            category: Category::Social,
-            custom: false,
-        },
-        Target {
-            domain: "instagram.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(31, 13, 72, 174)],
-            category: Category::Social,
-            custom: false,
-        },
-        // Messengers.
-        Target {
-            domain: "discord.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(162, 159, 128, 233)],
-            category: Category::Messenger,
-            custom: false,
-        },
+        service("www.twitch.tv", Category::VideoStreaming, ip(146, 75, 122, 214)),
+        service("netflix.com", Category::VideoStreaming, ip(207, 45, 73, 1)),
         // Audio streaming.
-        Target {
-            domain: "open.spotify.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(146, 75, 123, 42)],
-            category: Category::AudioStreaming,
-            custom: false,
-        },
+        service("open.spotify.com", Category::AudioStreaming, ip(146, 75, 123, 42)),
+        // Social networks.
+        service("x.com", Category::Social, ip(162, 159, 140, 229)),
+        service("facebook.com", Category::Social, ip(31, 13, 72, 36)),
+        service("instagram.com", Category::Social, ip(31, 13, 72, 174)),
+        // Messengers.
+        service("discord.com", Category::Messenger, ip(162, 159, 128, 233)),
+        service("web.telegram.org", Category::Messenger, ip(149, 154, 167, 99)),
+        service("web.whatsapp.com", Category::Messenger, ip(57, 144, 245, 32)),
+        // News.
+        service("bbc.com", Category::News, ip(151, 101, 0, 81)),
+        service("dw.com", Category::News, ip(194, 55, 26, 46)),
+        service("meduza.io", Category::News, ip(104, 18, 1, 79)),
+        // Search.
+        service("google.com", Category::Search, ip(142, 251, 13, 100)),
+        service("duckduckgo.com", Category::Search, ip(52, 142, 124, 215)),
+        // AI assistants.
+        service("chatgpt.com", Category::Ai, ip(104, 18, 32, 47)),
+        service("claude.ai", Category::Ai, ip(160, 79, 104, 10)),
+        service("gemini.google.com", Category::Ai, ip(142, 251, 153, 2)),
         // Games.
-        Target {
-            domain: "store.steampowered.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(23, 197, 162, 109)],
-            category: Category::Games,
-            custom: false,
-        },
-        Target {
-            domain: "store.epicgames.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(104, 18, 2, 64)],
-            category: Category::Games,
-            custom: false,
-        },
+        service("store.steampowered.com", Category::Games, ip(23, 197, 162, 109)),
+        service("store.epicgames.com", Category::Games, ip(104, 18, 2, 64)),
         // Encyclopedias.
-        Target {
-            domain: "wikipedia.org".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(185, 15, 59, 224)],
-            category: Category::Encyclopedia,
-            custom: false,
-        },
+        service("wikipedia.org", Category::Encyclopedia, ip(185, 15, 59, 224)),
         // Development.
-        Target {
-            domain: "github.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Service,
-            known_ips: vec![ip(140, 82, 121, 4)],
-            category: Category::Development,
-            custom: false,
-        },
+        service("github.com", Category::Development, ip(140, 82, 121, 4)),
+        service("gitlab.com", Category::Development, ip(172, 65, 251, 78)),
+        service("stackoverflow.com", Category::Development, ip(198, 252, 206, 1)),
         // Controls: expected to answer from this network.
-        Target {
-            domain: "yandex.ru".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Control,
-            known_ips: vec![ip(77, 88, 55, 88)],
-            category: Category::Control,
-            custom: false,
-        },
-        Target {
-            domain: "vk.com".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Control,
-            known_ips: vec![ip(87, 240, 129, 133)],
-            category: Category::Control,
-            custom: false,
-        },
-        Target {
-            domain: "mail.ru".to_string(),
-            port: DEFAULT_PORT,
-            role: Role::Control,
-            known_ips: vec![ip(185, 180, 201, 1)],
-            category: Category::Control,
-            custom: false,
-        },
+        control_target("yandex.ru", ip(77, 88, 55, 88)),
+        control_target("vk.com", ip(87, 240, 129, 133)),
+        control_target("mail.ru", ip(185, 180, 201, 1)),
     ]
 }
 
@@ -271,7 +220,7 @@ mod tests {
         let targets = builtin();
         let services = targets.iter().filter(|t| t.role == Role::Service).count();
         let controls = targets.iter().filter(|t| t.role == Role::Control).count();
-        assert_eq!(services, 11, "the stage-6 brief asks for eleven services");
+        assert_eq!(services, 24, "the stage-7 brief asks for twenty-four services");
         assert!(controls >= 2, "the brief asks for two or three controls");
     }
 
@@ -323,11 +272,19 @@ mod tests {
     #[test]
     fn the_new_services_are_in_the_list_with_recorded_addresses() {
         for domain in [
-            "instagram.com",
-            "store.steampowered.com",
-            "store.epicgames.com",
-            "open.spotify.com",
-            "www.twitch.tv",
+            "web.telegram.org",
+            "web.whatsapp.com",
+            "chatgpt.com",
+            "claude.ai",
+            "gemini.google.com",
+            "bbc.com",
+            "dw.com",
+            "meduza.io",
+            "google.com",
+            "duckduckgo.com",
+            "netflix.com",
+            "gitlab.com",
+            "stackoverflow.com",
         ] {
             let target = lookup(domain).unwrap_or_else(|| panic!("{domain} is missing"));
             assert!(!target.known_ips.is_empty(), "{domain} has no recorded address");
@@ -373,7 +330,7 @@ mod tests {
     #[test]
     fn the_services_helper_skips_the_controls() {
         let services = services();
-        assert_eq!(services.len(), 11);
+        assert_eq!(services.len(), 24);
         assert!(services.iter().all(|target| target.role == Role::Service));
     }
 }

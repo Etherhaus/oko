@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1648 712" width="1648" height="712">
+  <rect width="1648" height="712" fill="#0a0a0d"/>
+
+  <!-- ============ Тёмная (основная) ============ -->
+  <g transform="translate(28 28)">
+    <rect width="512" height="512" rx="112" fill="#16161a"/>
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+    <circle cx="256" cy="246" r="24" fill="#16161a"/>
+  </g>
+
+  <!-- ============ Светлая ============ -->
+  <g transform="translate(568 28)">
+    <rect width="512" height="512" rx="112" fill="#f6f5f4"/>
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#d9531e" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#d9531e"/>
+    <circle cx="256" cy="246" r="24" fill="#f6f5f4"/>
+  </g>
+
+  <!-- ============ Прозрачная (на раздвоенном фоне) ============ -->
+  <g transform="translate(1108 28)">
+    <rect width="512" height="512" rx="112" fill="#f6f5f4"/>
+    <path d="M256 0 L112 0 A112 112 0 0 0 0 112 L0 400 A112 112 0 0 0 112 512 L256 512 Z" fill="#16161a"/>
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+    <circle cx="256" cy="246" r="24" fill="#16161a"/>
+  </g>
+
+  <g font-family="sans-serif" font-size="34" fill="#6e6e78" text-anchor="middle">
+    <text x="284" y="584">Тёмная · #fb8762</text>
+    <text x="824" y="584">Светлая · #d9531e</text>
+    <text x="1364" y="584">Прозрачная · любой фон</text>
+  </g>
+
+  <!-- ============ Favicon-ряд: 64 / 48 / 32 / 16 ============ -->
+  <rect x="204" y="608" width="64" height="64" rx="14" fill="#16161a"/>
+  <g transform="translate(204 608) scale(0.125)">
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+    <circle cx="256" cy="246" r="24" fill="#16161a"/>
+  </g>
+  <rect x="288" y="624" width="48" height="48" rx="10.5" fill="#16161a"/>
+  <g transform="translate(288 624) scale(0.09375)">
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+    <circle cx="256" cy="246" r="24" fill="#16161a"/>
+  </g>
+  <rect x="356" y="640" width="32" height="32" rx="7" fill="#16161a"/>
+  <g transform="translate(356 640) scale(0.0625)">
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+    <circle cx="256" cy="246" r="24" fill="#16161a"/>
+  </g>
+  <rect x="408" y="656" width="16" height="16" rx="3.5" fill="#16161a"/>
+  <g transform="translate(408 656) scale(0.03125)">
+    <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+          fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+    <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+    <circle cx="256" cy="246" r="24" fill="#16161a"/>
+  </g>
+
+  <g font-family="sans-serif" font-size="28" fill="#6e6e78">
+    <text x="204" y="700">favicon · 64 / 48 / 32 / 16 px — в 16 зрачок исчезает, остаётся чистый глаз</text>
+  </g>
+</svg>

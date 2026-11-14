@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Oko — мокап главного окна</title>
+<style>
+  :root{
+    --bg:#16161a; --panel:#1c1c21; --surface:#222228; --surface2:#2a2a31;
+    --line:#303039; --text:#f2f1f0; --t2:#a9a9b0; --t3:#6e6e78;
+    --accent:#fb8762; --accent-press:#e0704b; --on-accent:#1b1b1f;
+    --ok:#4fd68b; --ok-dim:#2a6b4d; --warn:#f5c211; --bad:#ff6a5e; --na:#5a5a64;
+    --font:"Adwaita Sans","Inter",system-ui,-apple-system,sans-serif;
+    --mono:"JetBrains Mono","Fira Code",ui-monospace,monospace;
+  }
+  [data-theme="light"]{
+    --bg:#f6f5f4; --panel:#efeeec; --surface:#ffffff; --surface2:#e9e8e6;
+    --line:#dcdad7; --text:#1b1b1f; --t2:#5e5e64; --t3:#9a989e;
+    --accent:#d9531e; --accent-press:#b84213; --on-accent:#ffffff;
+    --ok:#14804a; --ok-dim:#bfe6d2; --warn:#9a6b00; --bad:#c33a2e; --na:#b3b1ae;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    font-family:var(--font); background:#0a0a0d;
+    background:
+      radial-gradient(1200px 700px at 50% 30%, #16161d 0%, #0a0a0d 70%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+    color:var(--text); display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:24px; overflow:auto;
+  }
+  .window{
+    position:relative;
+    width:900px; max-width:100%; background:var(--bg); color:var(--text);
+    border:3px solid var(--accent); border-radius:12px; overflow:visible;
+    box-shadow:0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(0,0,0,.2), 0 0 110px rgba(251,135,98,.07);
+    display:flex; flex-direction:column; height:620px;
+  }
+  .window.noframe{border-color:transparent; box-shadow:0 30px 80px rgba(0,0,0,.55)}
+
+  /* ── titlebar (niri: заголовок по центру) ── */
+  .titlebar{
+    height:34px; display:flex; align-items:center; justify-content:center;
+    flex:none; user-select:none; position:relative;
+  }
+  .titlebar .brand{display:flex; align-items:center; gap:7px; font-size:12.5px; letter-spacing:.02em; color:var(--t2); font-weight:600}
+  .titlebar svg{color:var(--accent)}
+
+  /* ── layout ── */
+  .body{flex:1; display:flex; min-height:0}
+  aside{
+    width:232px; flex:none; border-right:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0; background:var(--panel);
+    border-radius:9px 0 0 0;
+  }
+  main{flex:1; display:flex; flex-direction:column; min-width:0; min-height:0}
+
+  /* ── панель целей ── */
+  .t-head{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 12px 8px; flex:none;
+  }
+  .t-head h2{font-size:12px; font-weight:600; color:var(--t2)}
+  .t-bulk{display:flex; gap:4px}
+  .t-bulk button{
+    font-family:var(--font); font-size:11px; color:var(--t3); background:none;
+    border:none; padding:2px 6px; border-radius:6px; cursor:pointer;
+  }
+  .t-bulk button:hover{color:var(--text); background:var(--surface2)}
+  .t-scroll{flex:1; overflow-y:auto; padding:0 8px 8px; min-height:0}
+  .t-scroll::-webkit-scrollbar{width:6px}
+  .t-scroll::-webkit-scrollbar-thumb{background:var(--line); border-radius:3px}
+
+  .cat-head{
+    display:flex; align-items:center; gap:7px; padding:7px 6px 5px; cursor:pointer;
+    border-radius:7px; user-select:none;
+  }
+  .cat-head:hover{background:var(--surface)}
+  .cat-head .chev{flex:none; color:var(--t3); transition:transform .15s; display:flex}
+  .cat.collapsed .cat-head .chev{transform:rotate(-90deg)}
+  .cat-head .name{font-size:12px; font-weight:600; color:var(--t2)}
+  .cat-head .count{margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--t3)}
+  .cat-items{padding:0 4px 6px 10px; display:flex; flex-direction:column; gap:1px}
+  .cat.collapsed .cat-items{display:none}
+
+  .row-check{
+    width:15px; height:15px; flex:none; border:1.5px solid var(--t3); border-radius:5px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    background:var(--surface); padding:0; color:transparent;
+  }
+  .row-check:hover{border-color:var(--accent)}
+  .row-check.on{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
+  .row-check.mixed{background:var(--accent); opacity:.45}
+  .cat-items .target{display:flex; align-items:center; gap:8px; padding:3.5px 6px; border-radius:6px; cursor:default}
+  .cat-items .target:hover{background:var(--surface)}
+  .cat-items .target span{font-size:12.5px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .target.unchecked span{color:var(--t3)}
+
+  .t-add{
+    flex:none; margin:6px 10px 10px; padding:7px; border:1.5px dashed var(--t3);
+    border-radius:8px; background:none; color:var(--t3); font-family:var(--font);
+    font-size:12px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  .t-add:hover{border-color:var(--accent); color:var(--accent)}
+
+  /* ── шапка прогона ── */
+  .runhead{
+    flex:none; display:flex; align-items:center; gap:12px; padding:12px 16px 10px;
+    position:relative;
+  }
+  .run-meta{min-width:0}
+  .run-meta .st{font-size:13px; font-weight:600; color:var(--text)}
+  .run-meta .sub{font-size:11px; color:var(--t3); margin-top:2px; font-family:var(--mono)}
+  .run-meta .sub b{color:var(--t2); font-weight:500}
+  .run-actions{margin-left:auto; display:flex; align-items:center; gap:8px}
+  .icon-btn{
+    width:32px; height:32px; border-radius:8px; border:none; background:var(--surface);
+    color:var(--t2); cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  .icon-btn:hover{background:var(--surface2); color:var(--text)}
+  .icon-btn:focus-visible,button:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+  .btn-run{
+    height:34px; padding:0 20px; border:none; border-radius:8px; cursor:pointer;
+    background:var(--accent); color:var(--on-accent); font-family:var(--font);
+    font-size:13px; font-weight:700; letter-spacing:.01em;
+  }
+  .btn-run:hover{background:var(--accent-press)}
+  .btn-run:disabled{opacity:.55; cursor:default}
+  .runline{position:absolute; left:0; bottom:0; height:2px; width:0%; background:var(--accent); transition:width .12s linear; border-radius:1px}
+
+  /* ── дашборд: одна строка, числа + стена ── */
+  .dash{
+    flex:none; display:flex; align-items:center; gap:28px; padding:4px 16px 12px;
+  }
+  .stat{display:flex; align-items:baseline; gap:8px}
+  .stat .n{font-family:var(--mono); font-size:21px; font-weight:600; letter-spacing:-.02em; font-variant-numeric:tabular-nums}
+  .stat .lab{font-size:11.5px; color:var(--t2)}
+  .stat .delta{font-family:var(--mono); font-size:11px; padding:1px 5px; border-radius:5px}
+  .stat.ok .n{color:var(--ok)} .stat.bad .n{color:var(--bad)} .stat.un .n{color:var(--warn)}
+  .stat.ok .delta{color:var(--ok)} .stat.bad .delta{color:var(--bad)} .stat.un .delta{color:var(--t3)}
+  .delta.worse{background:color-mix(in srgb, var(--bad) 14%, transparent)}
+  .delta.better{background:color-mix(in srgb, var(--ok) 14%, transparent)}
+  .wall{flex:1; height:8px; display:flex; gap:3px; min-width:120px}
+  .wall i{border-radius:4px; height:100%}
+  .wall .w-ok{background:var(--ok)} .wall .w-bad{background:var(--bad)} .wall .w-un{background:var(--warn)}
+
+  /* ── таблица ── */
+  .tablewrap{flex:1; min-height:0; overflow-y:auto; padding:0 10px 8px}
+  .tablewrap::-webkit-scrollbar{width:6px}
+  .tablewrap::-webkit-scrollbar-thumb{background:var(--line); border-radius:3px}
+  .trow{
+    display:grid; grid-template-columns:minmax(140px,1.3fr) minmax(150px,1.5fr) 116px 84px;
+    align-items:center; gap:10px; padding:6px 10px; border-radius:8px; cursor:pointer;
+    border-left:2px solid transparent;
+  }
+  .trow:hover{background:var(--surface)}
+  .trow.sel{background:var(--surface); border-left-color:var(--accent)}
+  .trow.head{cursor:default; color:var(--t3); font-size:10.5px; padding:2px 10px 6px;
+    position:sticky; top:0; background:var(--bg); z-index:2}
+  .trow.head:hover{background:none}
+  .trow .dom{font-size:13px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .trow .dom small{display:block; font-size:10.5px; font-weight:400; color:var(--t3); margin-top:1px}
+  .trow .why{font-size:11.5px; color:var(--t2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .badge{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--t2)}
+  .badge .dot{width:7px; height:7px; border-radius:50%; flex:none}
+  .trow .ms{font-family:var(--mono); font-size:11px; color:var(--t3); text-align:right; font-variant-numeric:tabular-nums}
+  .v-ok .dot{background:var(--ok)} .v-bad .dot{background:var(--bad)} .v-un .dot{background:var(--warn)}
+  .trow.pending{opacity:.35}
+  .trow.flash{background:color-mix(in srgb, var(--accent) 7%, transparent)}
+
+  /* ── инспектор ── */
+  .inspector{
+    position:absolute; left:12px; right:12px; bottom:34px; z-index:5;
+    background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 16px 40px rgba(0,0,0,.45); padding:12px 14px 12px;
+    animation:insp-pop .16s ease-out;
+  }
+  @keyframes insp-pop{from{opacity:0; transform:translateY(7px)} to{opacity:1; transform:none}}
+  .insp-head{display:flex; align-items:center; gap:10px; margin-bottom:10px}
+  .insp-head .dom{font-size:14px; font-weight:700}
+  .insp-close{margin-left:auto}
+  .insp-steps{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap}
+  .step{
+    flex:1; min-width:88px; background:var(--bg); border:1px solid var(--line);
+    border-radius:8px; padding:6px 9px; display:flex; flex-direction:column; gap:3px;
+  }
+  .step .s-name{font-size:10px; color:var(--t3); letter-spacing:.03em}
+  .step .s-res{display:flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600}
+  .step .s-note{font-size:10px; color:var(--t3); line-height:1.35}
+  .s-pass{color:var(--ok)} .s-fail{color:var(--bad)} .s-warn{color:var(--warn)} .s-na{color:var(--na)}
+  .insp-facts{display:flex; flex-direction:column; gap:3px}
+  .insp-facts div{font-family:var(--mono); font-size:10.5px; color:var(--t2); line-height:1.45}
+  .insp-facts b{color:var(--text); font-weight:600}
+
+  /* ── статус-бар (boot-log) ── */
+  .statusbar{
+    flex:none; height:26px; border-top:1px solid var(--line); border-radius:0 0 8px 8px;
+    display:flex; align-items:center; padding:0 14px;
+    font-family:var(--mono); font-size:10.5px; color:var(--t3); gap:14px; background:var(--panel);
+  }
+  .statusbar .g{color:var(--ok)}
+  .statusbar .a{color:var(--accent)}
+
+  /* ── настройки-поповер ── */
+  .popover{
+    position:absolute; top:54px; right:12px; width:264px; z-index:9;
+    background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 16px 40px rgba(0,0,0,.45); padding:12px 14px; display:flex; flex-direction:column; gap:11px;
+  }
+  .pop-row{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  .pop-row label{font-size:12px; color:var(--t2)}
+  .pop-row input[type=text],.pop-row input[type=number]{
+    background:var(--bg); border:1px solid var(--line); border-radius:7px; color:var(--text);
+    font-family:var(--mono); font-size:11.5px; padding:4px 8px; width:118px;
+  }
+  .pop-row input:focus{outline:1.5px solid var(--accent)}
+  .seg{display:flex; background:var(--bg); border:1px solid var(--line); border-radius:7px; overflow:hidden}
+  .seg button{
+    border:none; background:none; color:var(--t3); font-family:var(--font); font-size:11px;
+    padding:4px 10px; cursor:pointer;
+  }
+  .seg button.on{background:var(--accent); color:var(--on-accent); font-weight:600}
+  .switch{
+    width:34px; height:19px; border-radius:10px; background:var(--line); border:none;
+    position:relative; cursor:pointer; flex:none;
+  }
+  .switch::after{
+    content:""; position:absolute; top:2.5px; left:3px; width:14px; height:14px;
+    border-radius:50%; background:var(--t3); transition:.15s;
+  }
+  .switch.on{background:var(--accent)}
+  .switch.on::after{left:17px; background:var(--on-accent)}
+  .hint{font-size:10px; color:var(--t3); line-height:1.4; margin-top:-4px}
+
+  /* ── пустое состояние, тосты, пульс прогона ── */
+  .empty{padding:56px 24px; text-align:center}
+  .empty .big{font-size:15px; font-weight:600; color:var(--t2); margin-bottom:7px}
+  .empty .sub{font-size:12px; color:var(--t3); line-height:1.5; max-width:340px; margin:0 auto}
+  .toast{
+    position:absolute; bottom:40px; left:50%; transform:translateX(-50%) translateY(4px);
+    background:var(--surface2); color:var(--text); font-size:12px; padding:8px 14px;
+    border-radius:9px; border:1px solid var(--line); box-shadow:0 10px 30px rgba(0,0,0,.4);
+    opacity:0; transition:.22s; pointer-events:none; z-index:20; white-space:nowrap;
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+  .trow.pending .badge .dot{animation:pulse .9s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.2}}
+
+  @media (prefers-reduced-motion: reduce){
+    *{transition:none !important; animation:none !important}
+  }
+</style>
+</head>
+<body>
+
+<div class="window" id="win">
+  <div class="titlebar">
+    <div class="brand">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <path d="M1.6 8C3.6 4.4 5.9 3 8 3s4.4 1.4 6.4 5C12.4 11.6 10.1 13 8 13S3.6 11.6 1.6 8Z"/>
+        <circle cx="8" cy="8" r="2.1" fill="currentColor" stroke="none"/>
+      </svg>
+      Oko
+    </div>
+  </div>
+
+  <div class="body">
+    <aside>
+      <div class="t-head">
+        <h2 id="lbl-targets">Цели</h2>
+        <div class="t-bulk">
+          <button id="bulk-all">Все</button>
+          <button id="bulk-none">Ничего</button>
+        </div>
+      </div>
+      <div class="t-scroll" id="sidebar"></div>
+      <button class="t-add" id="btn-add">
+        <svg width="12" height="12" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" fill="none"><path d="M8 3v10M3 8h10"/></svg>
+        <span id="lbl-add">Добавить цель</span>
+      </button>
+    </aside>
+
+    <main>
+      <header class="runhead">
+        <div class="run-meta">
+          <div class="st" id="run-state">Прогон завершён</div>
+          <div class="sub">сегодня, 21:42 · <b>3 мин 12 с</b> · 24 цели</div>
+        </div>
+        <div class="run-actions">
+          <button class="icon-btn" title="Экспорт: текст + JSON">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2.5v7M4.8 7l3.2 3.2L11.2 7M2.8 13.5h10.4"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-theme" title="Тема">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.2 9.4A5.5 5.5 0 1 1 6.6 2.8a4.4 4.4 0 0 0 6.6 6.6Z"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-settings" title="Настройки">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2 4.2h12M2 8h12M2 11.8h12"/><circle cx="10.2" cy="4.2" r="1.6" fill="var(--surface)"/><circle cx="5" cy="8" r="1.6" fill="var(--surface)"/><circle cx="9" cy="11.8" r="1.6" fill="var(--surface)"/>
+            </svg>
+          </button>
+          <button class="btn-run" id="btn-run">Проверить</button>
+        </div>
+        <div class="runline" id="runline"></div>
+      </header>
+
+      <div class="dash" id="dash"></div>
+
+      <div class="tablewrap" id="tablewrap">
+        <div class="trow head">
+          <span>Цель</span><span>Причина</span><span>Вердикт</span><span style="text-align:right">Время</span>
+        </div>
+        <div id="tbody"></div>
+      </div>
+
+      <div class="inspector" id="inspector" hidden>
+        <div class="insp-head">
+          <span class="dom" id="insp-dom"></span>
+          <span class="badge" id="insp-badge"></span>
+          <button class="icon-btn insp-close" id="insp-close" style="width:24px;height:24px">
+            <svg width="11" height="11" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" fill="none"><path d="M3 3l10 10M13 3L3 13"/></svg>
+          </button>
+        </div>
+        <div class="insp-steps" id="insp-steps"></div>
+        <div class="insp-facts" id="insp-facts"></div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span id="st-tunnel"><span class="a">tunnel</span> 127.0.0.1:10808 <span class="g">ok</span></span>
+    <span id="st-timeout"><span class="a">timeout</span> 5s</span>
+    <span><span class="a">probes</span> 8/target</span>
+    <span><span class="a">run</span> 192s</span>
+    <span style="margin-left:auto">oko 0.4.0 · etherhaus</span>
+  </footer>
+
+  <div class="popover" id="popover" hidden>
+    <div class="pop-row"><label>Таймаут пробы, с</label><input type="number" value="5" min="1" max="120"></div>
+    <div class="hint">Общий бюджет: соединение + рукопожатие + чтение.</div>
+    <div class="pop-row"><label>SOCKS5 (туннель-дифф)</label><input type="text" value="127.0.0.1:10808"></div>
+    <div class="pop-row"><label>Тема</label>
+      <div class="seg" id="seg-theme"><button data-v="dark" class="on">Тёмная</button><button data-v="light">Светлая</button></div>
+    </div>
+    <div class="pop-row"><label>Язык</label>
+      <div class="seg" id="seg-lang"><button data-v="ru" class="on">RU</button><button data-v="en">EN</button></div>
+    </div>
+    <div class="pop-row"><label>Рамка окна</label><button class="switch on" id="sw-frame"></button></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+"use strict";
+/* ── данные (иллюстративные, по живым прогонам этапов 3–6) ── */
+const CATS = [
+  {id:"social", ru:"Соцсети", en:"Social"},
+  {id:"im",     ru:"Мессенджеры", en:"Messaging"},
+  {id:"video",  ru:"Видеохостинги", en:"Video"},
+  {id:"ai",     ru:"AI-сервисы", en:"AI services"},
+  {id:"news",   ru:"СМИ", en:"News"},
+  {id:"search", ru:"Поиск", en:"Search"},
+  {id:"vstream",ru:"Видеостриминг", en:"Video streaming"},
+  {id:"astream",ru:"Аудиостриминг", en:"Music"},
+  {id:"games",  ru:"Игры", en:"Games"},
+  {id:"enc",    ru:"Энциклопедии", en:"Encyclopedia"},
+  {id:"dev",    ru:"Разработка", en:"Development"},
+];
+const OPEN_BY_DEFAULT = ["social","im","ai","news"];
+
+const T = [
+  {c:"video",  d:"youtube.com",          v:"path",   why:"DPI по SNI · в туннеле доступно", ms:3420},
+  {c:"social", d:"x.com",                v:"path",   why:"DPI по SNI · в туннеле доступно", ms:5100},
+  {c:"social", d:"facebook.com",         v:"path",   why:"DPI по SNI · в туннеле доступно", ms:4870},
+  {c:"social", d:"instagram.com",        v:"path",   why:"DPI по SNI · в туннеле доступно", ms:5240},
+  {c:"im",     d:"discord.com",          v:"path",   why:"DPI по SNI · в туннеле доступно", ms:3980},
+  {c:"im",     d:"web.telegram.org",     v:"ok",     why:"напрямую и в туннеле ок", ms:1450},
+  {c:"im",     d:"web.whatsapp.com",     v:"unknown",why:"QUIC молчит, признаки смешанные", ms:9210},
+  {c:"ai",     d:"chatgpt.com",          v:"svc",    why:"гео-блок сервиса · и в туннеле закрыто", ms:4120},
+  {c:"ai",     d:"claude.ai",            v:"svc",    why:"гео-блок сервиса · и в туннеле закрыто", ms:3870},
+  {c:"ai",     d:"gemini.google.com",     v:"ok",     why:"напрямую и в туннеле ок", ms:1720},
+  {c:"news",   d:"bbc.com",              v:"path",   why:"DPI по SNI · в туннеле доступно", ms:4550},
+  {c:"news",   d:"dw.com",               v:"ok",     why:"напрямую и в туннеле ок", ms:1310},
+  {c:"news",   d:"meduza.io",            v:"path",   why:"DNS-подмена + DPI · в туннеле доступно", ms:5090},
+  {c:"search", d:"google.com",           v:"ok",     why:"напрямую и в туннеле ок", ms:890},
+  {c:"search", d:"duckduckgo.com",       v:"ok",     why:"напрямую и в туннеле ок", ms:940},
+  {c:"astream",d:"open.spotify.com",     v:"ok",     why:"напрямую и в туннеле ок", ms:1120},
+  {c:"vstream",d:"www.twitch.tv",        v:"ok",     why:"напрямую и в туннеле ок", ms:1580},
+  {c:"vstream",d:"netflix.com",          v:"svc",    why:"гео-блок сервиса · и в туннеле закрыто", ms:2960},
+  {c:"games",  d:"store.steampowered.com",v:"ok",    why:"напрямую и в туннеле ок", ms:1240},
+  {c:"games",  d:"store.epicgames.com",  v:"ok",     why:"напрямую и в туннеле ок", ms:1010},
+  {c:"enc",    d:"wikipedia.org",        v:"ok",     why:"напрямую и в туннеле ок", ms:760},
+  {c:"dev",    d:"github.com",           v:"ok",     why:"напрямую и в туннеле ок", ms:820},
+  {c:"dev",    d:"gitlab.com",           v:"ok",     why:"напрямую и в туннеле ок", ms:930},
+  {c:"dev",    d:"stackoverflow.com",    v:"ok",     why:"напрямую и в туннеле ок", ms:1080},
+];
+T.forEach(t => t.checked = true);
+
+/* переопределения инспектора для показательных целей */
+const OVR = {
+  "youtube.com": {facts:[
+    "системный DNS <b>142.250.185.78</b> · DoH <b>142.250.185.142</b> — различаются (CDN-гео, не подмена)",
+    "настоящий SNI: <b>RST сразу после ClientHello</b>",
+    "белый SNI на тот же IP: <b>сервер ответил</b> (cert mismatch — ожидаемо) → DPI",
+    "через туннель: <b>ок, 312 мс</b> → блок на пути, не у сервиса",
+  ]},
+  "meduza.io": {facts:[
+    "системный DNS отдаёт <b>один и тот же пул</b> для разных доменов → подмена",
+    "DoH (dns.google): <b>104.26.6.12</b> — живой адрес",
+    "настоящий SNI: <b>обрыв</b> · белый SNI: <b>ответ</b> → DPI поверх DNS-подмены",
+    "через туннель: <b>ок</b> → путь",
+  ]},
+  "chatgpt.com": {facts:[
+    "TLS проходит, HTTP отдаёт <b>403 unavailable in your country</b>",
+    "через туннель: <b>тот же 403</b> — сервис режет датацентровые IP",
+    "вывод: <b>сам сервис</b>, провайдер не при чём",
+  ]},
+  "web.whatsapp.com": {facts:[
+    "QUIC: <b>тишина</b> — легитимный NAT или фильтр, по одной пробе не различить",
+    "HTTP жив, редиректит на www.web.whatsapp.com — признаков блокировки нет",
+    "вердикт: честное <b>unknown</b>, данных мало — это норма, не ошибка",
+  ]},
+  "github.com": {facts:[
+    "QUIC: тишина — норма (github не отвечает Version Negotiation)",
+    "все пробы: <b>ок напрямую и через туннель</b>",
+  ]},
+};
+
+const L = {
+  ru:{targets:"Цели", add:"Добавить цель", run:"Проверить", running:"Проверяю…",
+      done:"Прогон завершён", ok:"доступно", path:"провайдер", svc:"сам сервис", unknown:"неизвестно",
+      dl:"доступно", db:"режется", du:"неизвестно", tgt:"целей",
+      empty1:"Ни одна цель не отмечена", empty2:"Отметь цели слева — Oko покажет, где стены, а где вас не пускает сам сервис."},
+  en:{targets:"Targets", add:"Add target", run:"Run", running:"Running…",
+      done:"Run complete", ok:"available", path:"provider", svc:"service", unknown:"unknown",
+      dl:"available", db:"blocked", du:"unknown", tgt:"targets",
+      empty1:"No targets selected", empty2:"Check targets on the left — Oko will show where the walls are."},
+};
+const S = {lang:"ru", theme:"dark", frame:true, sel:null, running:false};
+const vname = v => ({ok:L[S.lang].ok, path:L[S.lang].path, svc:L[S.lang].svc, unknown:L[S.lang].unknown})[v];
+const vclass = v => ({ok:"v-ok", path:"v-bad", svc:"v-bad", unknown:"v-un"})[v];
+
+function steps(t){
+  const dns = (t.d==="meduza.io")
+    ? {n:"DNS", r:"warn", s:"подмена", note:"системный резолвер — один пул"}
+    : {n:"DNS", r:"pass", s:"ok", note:"адреса легитимны (CDN-гео)"};
+  if(t.v==="ok") return [dns,
+    {n:"TCP", r:"pass", s:"ok", note:"connect 443"},
+    {n:"TLS", r:"pass", s:"ok", note:"SNI настоящий, cert ok"},
+    {n:"HTTP", r:"pass", s:"ok", note:"Host настоящий"},
+    {n:"QUIC", r:"na", s:"—", note:"тишина — норма"},
+    {n:"Туннель", r:"pass", s:"ok", note:"дифф: both_ok"}];
+  if(t.v==="path") return [dns,
+    {n:"TCP", r:"pass", s:"ok", note:"connect 443"},
+    {n:"TLS", r:"fail", s:"RST", note:"обрыв после ClientHello"},
+    {n:"HTTP", r:"na", s:"—", note:"за TLS не дошло"},
+    {n:"QUIC", r:"na", s:"—", note:"N/A за DPI"},
+    {n:"Туннель", r:"pass", s:"ok", note:"в туннеле доступно → путь"}];
+  if(t.v==="svc") return [dns,
+    {n:"TCP", r:"pass", s:"ok", note:"connect 443"},
+    {n:"TLS", r:"pass", s:"ok", note:"cert ok"},
+    {n:"HTTP", r:"fail", s:"403", note:"регион закрыт сервисом"},
+    {n:"QUIC", r:"na", s:"—", note:"не показатель"},
+    {n:"Туннель", r:"fail", s:"403", note:"и через туннель — 403"}];
+  return [dns,
+    {n:"TCP", r:"pass", s:"ok", note:"connect 443"},
+    {n:"TLS", r:"pass", s:"ok", note:"cert ok"},
+    {n:"HTTP", r:"warn", s:"редирект", note:"неожиданный, но живой"},
+    {n:"QUIC", r:"fail", s:"тишина", note:"NAT или фильтр — не различить"},
+    {n:"Туннель", r:"pass", s:"ok", note:"дифф: both_ok"}];
+}
+function facts(t){
+  if(OVR[t.d]) return OVR[t.d].facts;
+  if(t.v==="ok") return ["все пробы прошли <b>напрямую и через туннель</b>"];
+  if(t.v==="path") return ["белый SNI на тот же IP: <b>сервер ответил</b> → DPI по SNI",
+    "через туннель: <b>ок</b> → блок на пути (ТСПУ/провайдер)"];
+  if(t.v==="svc") return ["TLS проходит, HTTP отдаёт <b>403</b>: сервис сам закрывает регион",
+    "через туннель — <b>тот же 403</b>: это не провайдер"];
+  return ["признаки противоречивы — честное <b>unknown</b>"];
+}
+
+/* ── рендер сайдбара ── */
+function renderSidebar(){
+  const el = document.getElementById("sidebar");
+  el.innerHTML = "";
+  for(const c of CATS){
+    const items = T.filter(t=>t.c===c.id);
+    const on = items.filter(t=>t.checked).length;
+    const box = document.createElement("div");
+    box.className = "cat" + (OPEN_BY_DEFAULT.includes(c.id) ? "" : " collapsed");
+    box.innerHTML = `
+      <div class="cat-head">
+        <span class="chev"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg></span>
+        <span class="name">${c[S.lang]}</span>
+        <span class="count">${on}/${items.length}</span>
+        <button class="row-check ${on===items.length?"on":on>0?"mixed":""}" aria-label="вся группа">
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8.5l3.4 3.4L13 5"/></svg>
+        </button>
+      </div>
+      <div class="cat-items"></div>`;
+    box.querySelector(".cat-head").addEventListener("click", e=>{
+      if(e.target.closest(".row-check")) return;
+      box.classList.toggle("collapsed");
+    });
+    const check = box.querySelector(".row-check");
+    check.addEventListener("click", ()=>{
+      const now = on !== items.length;
+      items.forEach(t=>t.checked=now);
+      renderAll();
+    });
+    const list = box.querySelector(".cat-items");
+    for(const t of items){
+      const r = document.createElement("div");
+      r.className = "target" + (t.checked?"":" unchecked");
+      r.innerHTML = `<button class="row-check ${t.checked?"on":""}" aria-label="${t.d}">
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8.5l3.4 3.4L13 5"/></svg>
+        </button><span>${t.d}</span>`;
+      r.querySelector(".row-check").addEventListener("click", ()=>{
+        t.checked=!t.checked; renderAll();
+      });
+      list.appendChild(r);
+    }
+    el.appendChild(box);
+  }
+}
+
+/* ── дашборд и таблица ── */
+function active(){ return T.filter(t=>t.checked); }
+
+function renderDash(){
+  const a = active();
+  const ok = a.filter(t=>t.v==="ok").length,
+        bad = a.filter(t=>t.v==="path"||t.v==="svc").length,
+        un = a.filter(t=>t.v==="unknown").length;
+  const tot = a.length||1;
+  const D = [
+    {cls:"ok", n:ok,  lab:L[S.lang].dl, d:"-1", dc:"worse"},
+    {cls:"bad", n:bad, lab:L[S.lang].db, d:"+1", dc:"better"},
+    {cls:"un",  n:un,  lab:L[S.lang].du, d:"·",  dc:""},
+  ];
+  document.getElementById("dash").innerHTML =
+    D.map(s=>`<div class="stat ${s.cls}"><span class="n">${s.n}</span>
+      <span class="lab">${s.lab}</span><span class="delta ${s.dc}">${s.d}</span></div>`).join("")
+    + `<div class="wall">
+        <i class="w-ok" style="flex:${ok}"></i><i class="w-bad" style="flex:${bad}"></i><i class="w-un" style="flex:${un}"></i>
+      </div>`;
+}
+
+const ORDER = {path:0, svc:1, unknown:2, ok:3};
+function renderTable(){
+  const el = document.getElementById("tbody");
+  el.innerHTML = "";
+  const rows = active().slice().sort((a,b)=>ORDER[a.v]-ORDER[b.v] || a.ms-b.ms);
+  if(!rows.length){
+    el.innerHTML = `<div class="empty"><div class="big">${L[S.lang].empty1}</div>
+      <div class="sub">${L[S.lang].empty2}</div></div>`;
+    return;
+  }
+  for(const t of rows){
+    const r = document.createElement("div");
+    r.className = "trow" + (S.sel===t.d?" sel":"");
+    r.dataset.d = t.d;
+    r.innerHTML = `
+      <span class="dom">${t.d}<small>${CATS.find(c=>c.id===t.c)[S.lang]}</small></span>
+      <span class="why">${t.why}</span>
+      <span class="badge ${vclass(t.v)}"><span class="dot"></span>${vname(t.v)}</span>
+      <span class="ms">${t.ms>=1000?(t.ms/1000).toFixed(1)+" с":t.ms+" мс"}</span>`;
+    r.addEventListener("click", ()=>showInspector(t.d));
+    el.appendChild(r);
+  }
+}
+
+function renderAll(){ renderSidebar(); renderDash(); renderTable();
+  document.querySelector(".run-meta .sub").innerHTML =
+    `сегодня, 21:42 · <b>3 мин 12 с</b> · ${active().length} ${L[S.lang].tgt}`;
+  if(S.sel && !T.find(t=>t.d===S.sel && t.checked)) hideInspector();
+}
+
+/* ── инспектор ── */
+function showInspector(d){
+  S.sel = d;
+  const t = T.find(x=>x.d===d);
+  document.getElementById("insp-dom").textContent = t.d;
+  document.getElementById("insp-badge").className = "badge "+vclass(t.v);
+  document.getElementById("insp-badge").innerHTML =
+    `<span class="dot"></span>${vname(t.v)} — ${t.v==="path"?"блок на пути (ТСПУ/провайдер)":
+      t.v==="svc"?"сервис сам закрывает регион":t.v==="ok"?"всё чисто":"данных мало"}`;
+  document.getElementById("insp-steps").innerHTML = steps(t).map(s=>`
+    <div class="step"><span class="s-name">${s.n}</span>
+      <span class="s-res s-${s.r}">${s.r==="pass"?"✓":s.r==="fail"?"✗":s.r==="warn"?"!":"—"}</span>
+      <span class="s-note">${s.s} · ${s.note}</span></div>`).join("");
+  document.getElementById("insp-facts").innerHTML = facts(t).map(f=>`<div>${f}</div>`).join("");
+  document.getElementById("inspector").hidden = false;
+  renderTable();
+}
+function hideInspector(){ S.sel=null; document.getElementById("inspector").hidden=true; renderTable(); }
+document.getElementById("insp-close").addEventListener("click", hideInspector);
+
+/* ── bulk ── */
+document.getElementById("bulk-all").addEventListener("click", ()=>{T.forEach(t=>t.checked=true); renderAll();});
+document.getElementById("bulk-none").addEventListener("click", ()=>{T.forEach(t=>t.checked=false); renderAll(); hideInspector();});
+
+/* ── настройки, тема, рамка, язык ── */
+const win = document.getElementById("win");
+const pop = document.getElementById("popover");
+document.getElementById("btn-settings").addEventListener("click", e=>{
+  e.stopPropagation(); pop.hidden = !pop.hidden;
+});
+document.addEventListener("click", e=>{
+  if(!pop.hidden && !pop.contains(e.target) && !e.target.closest("#btn-settings")) pop.hidden = true;
+});
+document.getElementById("seg-theme").addEventListener("click", e=>{
+  if(e.target.dataset.v) setTheme(e.target.dataset.v);
+});
+document.getElementById("btn-theme").addEventListener("click", ()=>{
+  setTheme(S.theme==="dark"?"light":"dark");
+});
+function setTheme(v){
+  S.theme = v;
+  win.dataset.theme = v==="light" ? "light" : "";
+  document.querySelectorAll("#seg-theme button").forEach(b=>b.classList.toggle("on", b.dataset.v===v));
+}
+document.getElementById("seg-lang").addEventListener("click", e=>{
+  const v = e.target.dataset.v; if(!v) return;
+  S.lang = v;
+  document.getElementById("lbl-targets").textContent = L[v].targets;
+  document.getElementById("lbl-add").textContent = L[v].add;
+  document.getElementById("btn-run").textContent = L[v].run;
+  document.getElementById("run-state").textContent = L[v].done;
+  document.querySelectorAll("#seg-lang button").forEach(b=>b.classList.toggle("on", b.dataset.v===v));
+  renderAll(); if(S.sel) showInspector(S.sel);
+});
+document.getElementById("sw-frame").addEventListener("click", function(){
+  S.frame=!S.frame; this.classList.toggle("on", S.frame);
+  win.classList.toggle("noframe", !S.frame);
+});
+
+/* ── демо-прогон: UI не блокируется, прогресс виден ── */
+const btnRun = document.getElementById("btn-run");
+btnRun.addEventListener("click", ()=>{
+  if(S.running) return;
+  S.running = true;
+  const label = btnRun.textContent;
+  btnRun.disabled = true; btnRun.textContent = L[S.lang].running;
+  document.getElementById("run-state").textContent = L[S.lang].running;
+  const rows = [...document.querySelectorAll("#tbody .trow")];
+  const line = document.getElementById("runline");
+  rows.forEach(r=>r.classList.add("pending"));
+  let i = 0;
+  const iv = setInterval(()=>{
+    if(i < rows.length){
+      rows[i].classList.remove("pending");
+      rows[i].classList.add("flash");
+      setTimeout(()=>rows[i-1] && rows[i-1].classList.remove("flash"), 120);
+      line.style.width = ((i+1)/rows.length*100)+"%";
+      btnRun.textContent = `${L[S.lang].running} ${i+1}/${rows.length}`;
+      i++;
+    } else {
+      clearInterval(iv);
+      rows.forEach(r=>r.classList.remove("flash","pending"));
+      line.style.width = "0%";
+      btnRun.disabled = false; btnRun.textContent = L[S.lang].run;
+      document.getElementById("run-state").textContent = L[S.lang].done;
+      S.running = false;
+    }
+  }, 90);
+});
+
+/* ── глаз следит за курсором: «око, которое смотрит на смотрящего» ── */
+const pupil = document.querySelector(".titlebar .brand circle");
+if(pupil && !matchMedia("(prefers-reduced-motion: reduce)").matches){
+  document.addEventListener("mousemove", e=>{
+    const r = win.getBoundingClientRect();
+    const dx = Math.max(-1.6, Math.min(1.6, (e.clientX-(r.left+r.width/2))/260));
+    const dy = Math.max(-1, Math.min(1, (e.clientY-(r.top+17))/180));
+    pupil.setAttribute("transform", `translate(${dx.toFixed(2)} ${dy.toFixed(2)})`);
+  });
+}
+
+/* ── тосты: экспорт и добавление цели ── */
+const toastEl = document.getElementById("toast"); let toastT;
+function toast(msg){
+  toastEl.textContent = msg; toastEl.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(()=>toastEl.classList.remove("show"), 2200);
+}
+document.querySelector(".run-actions .icon-btn").addEventListener("click", ()=>{
+  toast("oko-2026-11-14_2142.txt + .json — сохранены в ~/Загрузки");
+});
+document.getElementById("btn-add").addEventListener("click", ()=>{
+  toast("Диалог добавления: домен → категория «Пользовательские»");
+});
+
+/* ── настройки живо отражаются в статус-баре ── */
+const numIn = pop.querySelector("input[type=number]");
+const socksIn = pop.querySelector("input[type=text]");
+numIn.addEventListener("input", ()=>{
+  document.getElementById("st-timeout").innerHTML =
+    `<span class="a">timeout</span> ${numIn.value||5}s`;
+});
+socksIn.addEventListener("input", ()=>{
+  const v = socksIn.value.trim();
+  document.getElementById("st-tunnel").innerHTML = v
+    ? `<span class="a">tunnel</span> ${v} <span class="g">ok</span>`
+    : `<span class="a">tunnel</span> off — диффа не будет`;
+});
+
+renderAll();
+</script>
+</body>
+</html>
