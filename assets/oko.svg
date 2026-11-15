@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- The dark tile of design/oko_logos.svg, lifted out unchanged: the same
+       rounded square, the same eye, the same coral. Nothing redrawn. -->
+  <rect width="512" height="512" rx="112" fill="#16161a"/>
+  <path d="M76 246 C110 158, 190 110, 256 110 C322 110, 402 158, 436 246 C402 334, 322 382, 256 382 C190 382, 110 334, 76 246 Z"
+        fill="none" stroke="#fb8762" stroke-width="24" stroke-linejoin="round"/>
+  <circle cx="256" cy="246" r="62" fill="#fb8762"/>
+  <circle cx="256" cy="246" r="24" fill="#16161a"/>
+</svg>

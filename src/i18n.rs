@@ -409,6 +409,21 @@ labels! {
         "этот бинарник ставит пакетный менеджер: обновляй через него"
     ),
 
+    // The about card.
+    about, set_about => ("About", "О программе"),
+    about_tagline, set_about_tagline => (
+        "a blocking detector — measures, does not bypass",
+        "детектор блокировок — измеряет, не обходит"
+    ),
+    about_made_with, set_about_made_with => (
+        "made with the Vibe CLI",
+        "создано при помощи Vibe CLI"
+    ),
+    about_slogan, set_about_slogan => (
+        "Ether leads through the walls; Oko shows where they stand",
+        "Ether ведёт сквозь стены, Oko показывает, где они стоят"
+    ),
+
     // The keyboard hints of the status bar.
     key_search, set_key_search => ("search", "поиск"),
     key_run, set_key_run => ("run", "прогон"),

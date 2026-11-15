@@ -635,7 +635,7 @@ mod tests {
         }
     }
 
-    /// A real release archive, made with `tar czf` and signed with the dev key
+    /// A real release archive, made with `tar czf` and signed with the release key
     /// in `keys/`: `oko-0.5.0-linux-x86_64/oko` holding `the new binary`.
     ///
     /// It is embedded rather than built here because a signature covers exact
@@ -643,12 +643,12 @@ mod tests {
     const SIGNED_TARBALL: &str = "\
         1f8b0800000000000003edd1d10a82301480e13dca5e40db7467eb6dc248482a0553b2b74f2f82884637bbc9feefe6c036d8c6df9dbacce4929becdcb4e3944d5bbff36ea35232b320b24c1bc4bcce2765a508be28a50c4e19eb8c15a525e92b22c6eb50f55aabc3a519fa7bfcdcb7fd1fd57dee3f2fa7bb6309ec9d8bf7b7febdbf14737f93ee09717fde7f38d6baad6f7adfb4d50abf07000000000000000000000000acda03641a7cef00280000";
 
-    /// The `.minisig` of [`SIGNED_TARBALL`], made with the dev key.
+    /// The `.minisig` of [`SIGNED_TARBALL`], made with the release key.
     const SIGNED_SIGNATURE: &str = "\
         untrusted comment: signature from minisign secret key\n\
-        RURt9usxyt6R/2YR5Ho4ubQt00HWX0lWxeNXgBTLC8docLUPh2h2iPR6xtjKgkiTRlGqy3hiDX2pUipjHX4opFvzgE7SACvUIQk=\n\
+        RURKvw8XRG50X/lGbIHXXiKmuwdcguD+AsVy7v/UfAnUeV1q5xNDC7itkiBTJbwM4KkOZOJw8tyGDPklXOiNBCXp37CxFP9A1wg=\n\
         trusted comment: oko 0.5.0 linux x86_64\n\
-        aGaQPmL+exT9UzWr2Q6qtcLCvDcFfjyvNbGIwBZBWevV5Pa9G826iJeeJg6j78tY5osVa0f7wuxmHFNu43P4BQ==\n";
+        9vaEfgZIzNY7xtndw4EETJms0qpucpZKNCpmpICHaYPm8S9bv3lZ2xUyeSV3j91WedgC00DP3Lf2S+2K7Pe0DA==\n";
 
     /// The bytes of [`SIGNED_TARBALL`].
     fn signed_tarball() -> Vec<u8> {

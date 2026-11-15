@@ -761,6 +761,8 @@ pub fn run() -> ExitCode {
         }
     };
     let _ = slint::set_xdg_app_id("io.github.etherhaus.Oko");
+    // The about card names the version the binary was built from.
+    ui.set_about_version(env!("CARGO_PKG_VERSION").into());
 
     let (events, incoming) = mpsc::channel::<Event>();
     // The first launch follows the desktop's language; after that the file
@@ -828,6 +830,9 @@ pub fn run() -> ExitCode {
     }
     if std::env::var("OKO_SETTINGS").is_ok() {
         ui.invoke_open_settings();
+    }
+    if std::env::var("OKO_ABOUT").is_ok() {
+        ui.set_about_open(true);
     }
     // A debug aid: press the updater's button once the window is up, so the
     // manual check and its toast can be seen without a mouse. Pressing it here

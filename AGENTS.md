@@ -31,9 +31,9 @@
 - `ui/app.slint` — разметка окна по `design/mockup.html`: глобалы `Theme` (палитра, радиусы, шрифты) и `Labels` (164 строки), компоненты Eye (зрачок за курсором), IconButton, RunButton, Check, TextButton, Segment/Segmented, Switch, Field, Stat, Wall, Badge, TableRow, TargetItem, StepCard, AppWindow.
 - `build.rs` — `slint_build::compile("ui/app.slint")`.
 
-**Куда Oko ходит по сети** (этап 5 переносит этот список в README и SECURITY.md):
+**Куда Oko ходит по сети** (список перенесён в README.md / README.en.md и SECURITY.md — при правке держать все три в согласии):
 - Цели прогона — 24 домена из `src/target.rs` (443/80/53 по нужде пробы) плюс 3 контрольные, в окне не видны.
-- DoH-эталоны — `https://dns.google/dns-query` и `https://dns.sb/dns-query`.
+- DoH-эталоны — `https://dns.google/dns-query`, `https://cloudflare-dns.com/dns-query`, `https://dns.sb/dns-query` (три, а не два: заблокированный эталон не должен оставить пробу без базы).
 - Апдейтер — `https://api.github.com/repos/etherhaus/oko/releases/latest` и редирект на `objects.githubusercontent.com` (ассет `oko-<ver>-<os>-<arch>.tar.gz` и его `.minisig`). Больше никуда.
 - Телеметрии нет: наружу уходят только эти запросы, и все — по действию пользователя или по автопроверке раз в сутки.
 

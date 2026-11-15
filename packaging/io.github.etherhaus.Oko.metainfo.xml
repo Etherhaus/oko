@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.etherhaus.Oko</id>
+  <name>Oko</name>
+  <summary>Blocking detector: measures, does not bypass</summary>
+  <keywords>
+    <keyword>oko</keyword>
+    <keyword>blocking</keyword>
+    <keyword>dpi</keyword>
+    <keyword>dns</keyword>
+    <keyword>censorship</keyword>
+    <keyword>network</keyword>
+    <keyword>diagnostics</keyword>
+  </keywords>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.etherhaus">
+    <name>Dmitry Etherhaus</name>
+  </developer>
+  <description>
+    <p>
+      Oko runs a series of network probes against services people actually use
+      and says what stands in the way: a spoofed DNS answer, a middlebox that
+      reads the server name, an address that is blocked, a Host header that is
+      filtered, a connection cut at 16–20 KB.
+    </p>
+    <ul>
+      <li>DNS: the system resolver against three DNS-over-HTTPS references</li>
+      <li>TLS with the real server name, and with a control name on the same address</li>
+      <li>Plain HTTP with the real Host header</li>
+      <li>Payload: where the body stops, at 16–20 KB or around 25 KB</li>
+      <li>QUIC: a 1200-byte Initial and the server's Version Negotiation</li>
+      <li>Direct against a SOCKS5 tunnel, so a block can be told from a slow server</li>
+      <li>24 targets in 11 categories, plus your own domains</li>
+      <li>English and Russian, dark and light themes, JSON and text reports</li>
+      <li>Updates itself, and checks the minisign signature before installing</li>
+    </ul>
+    <p>
+      Oko measures and explains. It does not bypass anything: no ClientHello
+      fragmentation, no TCP tricks, no traffic of anyone else.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.etherhaus.Oko.desktop</launchable>
+  <url type="homepage">https://github.com/Etherhaus/oko</url>
+  <url type="bugtracker">https://github.com/Etherhaus/oko/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A run in the dark theme</caption>
+      <image>https://raw.githubusercontent.com/Etherhaus/oko/main/design/screenshots/stage5-dark.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The light theme</caption>
+      <image>https://raw.githubusercontent.com/Etherhaus/oko/main/design/screenshots/stage5-light.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-11-15">
+      <description>
+        <p>First public release.</p>
+        <p>Runs 24 targets in 11 categories, plus your own domains, and says what stands in the way: a spoofed DNS answer, a middlebox that reads the server name, a blocked address, a filtered Host header, a connection cut at 16–20 KB.</p>
+        <p>Compares a direct connection against a SOCKS5 tunnel, so a block can be told from a slow server.</p>
+        <p>Updates itself from GitHub releases and checks the minisign signature before installing anything. An update whose signature does not match is never installed, and a binary that lives in a system path is told to wait for the package manager instead of replacing itself.</p>
+        <p>English and Russian, dark and light themes, JSON and text reports.</p>
+      </description>
+    </release>
+  </releases>
+</component>

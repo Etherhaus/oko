@@ -4,3 +4,8 @@ dist/
 # Probe reports carry the user's network fingerprint: never commit them.
 *.oko.txt
 *.oko.json
+
+# The minisign secret key signs releases and never belongs in the repository.
+# Only keys/minisign.pub is tracked.
+*.key
+oko-secret*

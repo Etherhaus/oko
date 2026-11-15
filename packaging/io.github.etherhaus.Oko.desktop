@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Oko
+GenericName=Blocking Detector
+Comment=Measures DNS spoofing, DPI by SNI, IP blocks and l4-25 drops
+Exec=oko
+Icon=io.github.etherhaus.Oko
+Terminal=false
+Categories=Network;Security;
+Keywords=blocking;dpi;dns;censorship;network;diagnostics;
+StartupWMClass=io.github.etherhaus.Oko

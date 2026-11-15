@@ -301,6 +301,12 @@ export global Labels {
     in property <string> update-signature-hint;
     in property <string> update-managed;
 
+    // The about card.
+    in property <string> about;
+    in property <string> about-tagline;
+    in property <string> about-made-with;
+    in property <string> about-slogan;
+
     // The keyboard hints of the status bar.
     in property <string> key-search;
     in property <string> key-run;
@@ -1229,6 +1235,9 @@ component StepCard inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "Oko";
+    // The window icon: the dark tile of design/oko_logos.svg. Wayland finds it
+    // through the desktop entry named by the app id; X11 takes it from here.
+    icon: @image-url("../assets/oko-128.png");
     preferred-width: 900px;
     preferred-height: 620px;
     min-width: 780px;
@@ -1302,6 +1311,11 @@ export component AppWindow inherits Window {
     in-out property <int> timeout-value: 5;
     in-out property <string> socks5-text;
     in-out property <string> lang: "ru";
+
+    // The about card: the eye, the version, who made it and under what licence.
+    // It opens over the settings popover, so Esc closes it first.
+    in-out property <bool> about-open: false;
+    in-out property <string> about-version;
 
     // Adding a target.
     in-out property <bool> adding: false;
@@ -1394,11 +1408,13 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Esc, in order: the settings popover, the add row, the details panel, the
-    // search text. The search keeps the caret: the mockup clears the query and
-    // leaves the field ready for the next one.
+    // Esc, in order: the about card, the settings popover, the add row, the
+    // details panel, the search text. The search keeps the caret: the mockup
+    // clears the query and leaves the field ready for the next one.
     public function escape-chain() {
-        if (root.settings-open) {
+        if (root.about-open) {
+            root.about-open = false;
+        } else if (root.settings-open) {
             root.close-settings();
         } else if (root.adding) {
             root.cancel-add();
@@ -2687,6 +2703,224 @@ export component AppWindow inherits Window {
                         text: root.update-hint;
                         color: Theme.t3;
                         font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    // ── about ──
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.line;
+                    }
+
+                    Rectangle {
+                        height: 26px;
+                        border-radius: 6px;
+                        background: about-row.has-hover ? Theme.surface-2 : transparent;
+
+                        Text {
+                            x: 8px;
+                            y: 0;
+                            height: parent.height;
+                            text: Labels.about;
+                            color: Theme.text;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        about-row := TouchArea {
+                            clicked => {
+                                root.about-open = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── the about card ──
+        // It opens over the settings popover, so Esc closes it first and the
+        // popover stays where it was.
+        if root.about-open: Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width;
+            height: parent.height;
+            background: transparent;
+
+            TouchArea {
+                clicked => {
+                    root.about-open = false;
+                }
+            }
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 340px;
+                // The layout's preferred height already carries its padding.
+                height: about-body.preferred-height;
+                background: Theme.surface;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.line;
+                drop-shadow-color: #00000080;
+                drop-shadow-blur: 48px;
+                drop-shadow-offset-y: 18px;
+
+                // The card takes its own clicks, so they do not reach the
+                // closing area behind it.
+                TouchArea {
+                    clicked => {}
+                }
+
+                about-body := VerticalLayout {
+                    padding-top: 22px;
+                    padding-right: 22px;
+                    padding-bottom: 20px;
+                    padding-left: 22px;
+                    spacing: 6px;
+
+                    // The eye: the same shape as the icon and the title bar.
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 44px;
+                            height: 44px;
+                            background: transparent;
+
+                            Path {
+                                width: parent.width;
+                                height: parent.height;
+                                viewbox-width: 16;
+                                viewbox-height: 16;
+                                commands: "M1.6 8C3.6 4.4 5.9 3 8 3s4.4 1.4 6.4 5C12.4 11.6 10.1 13 8 13S3.6 11.6 1.6 8Z";
+                                stroke: Theme.accent;
+                                stroke-width: 1.2px;
+                                fill: transparent;
+                            }
+                            // The pupil is a ring, as in the icon: a solid dot
+                            // would read as a target, not an eye.
+                            Rectangle {
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                width: 11px;
+                                height: 11px;
+                                border-radius: 5.5px;
+                                background: Theme.accent;
+
+                                Rectangle {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 4px;
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: Theme.surface;
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Oko";
+                        color: Theme.text;
+                        font-size: 20px;
+                        font-weight: 600;
+                        letter-spacing: 0.2px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: root.about-version;
+                        color: Theme.t3;
+                        font-family: Theme.mono;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+
+                    Rectangle {
+                        height: 2px;
+                        background: transparent;
+                    }
+
+                    Text {
+                        text: Labels.about-tagline;
+                        color: Theme.t2;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    Rectangle {
+                        height: 8px;
+                        background: transparent;
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.line;
+                    }
+
+                    Rectangle {
+                        height: 4px;
+                        background: transparent;
+                    }
+
+                    Text {
+                        text: "Dmitry Etherhaus";
+                        color: Theme.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: Labels.about-made-with;
+                        color: Theme.t3;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: "lehzenblad@proton.me";
+                        color: Theme.t2;
+                        font-family: Theme.mono;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: "github.com/etherhaus/oko";
+                        color: Theme.accent;
+                        font-family: Theme.mono;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: "MIT";
+                        color: Theme.t3;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+
+                    Rectangle {
+                        height: 8px;
+                        background: transparent;
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        background: Theme.line;
+                    }
+
+                    Rectangle {
+                        height: 4px;
+                        background: transparent;
+                    }
+
+                    Text {
+                        text: Labels.about-slogan;
+                        color: Theme.t3;
+                        font-size: 10.5px;
+                        horizontal-alignment: center;
                         wrap: word-wrap;
                     }
                 }

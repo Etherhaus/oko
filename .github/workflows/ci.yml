@@ -1,0 +1,57 @@
+# Runs on every push to main or a stage branch, and on every pull request, so a
+# broken build, a formatting slip, a new warning or a known-vulnerable
+# dependency is caught long before a release tag.
+#
+# Nothing here signs a release: the minisign key lives on the release machine
+# and never enters CI. See SECURITY.md.
+name: CI
+
+on:
+  push:
+    branches: [main, "stage-*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          # The Slint renderer links against fontconfig.
+          sudo apt-get install -y libfontconfig1-dev
+          rustup component add rustfmt clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # A prebuilt binary, so the check costs seconds instead of the three
+      # minutes `cargo install cargo-audit` takes to compile.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Fails on a real vulnerability in Cargo.lock. Unmaintained and yanked
+      # crates are reported but don't fail the run: they are transitive, and
+      # turning them into a red build would mean either pinning a fork or
+      # ignoring the advisory outright, both of which hide more than they fix.
+      - name: Check the dependencies against the advisory database
+        run: cargo audit
