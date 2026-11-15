@@ -184,7 +184,8 @@ The complete list, nothing else:
   `https://dns.sb/dns-query`.
 - **The updater** — `https://api.github.com/repos/etherhaus/oko/releases/latest` and a redirect
   to `objects.githubusercontent.com` for the archive and its signature. At most once a day,
-  quietly, and only if you have not turned it off in Settings.
+  quietly. There is no switch for it in Settings: the daily check can only be pre-empted with
+  the Check button, and the request itself can be blocked in your firewall.
 
 There is no telemetry. Not a single request goes out "just because": everything leaves either
 on a button press or on the daily update check. The report stays on disk — it carries a
