@@ -117,7 +117,7 @@ async fn probe_command(args: ProbeArgs) -> ExitCode {
         timeout: Duration::from_secs(args.timeout),
         socks5: args.socks5,
     };
-    let report = run::run(targets, options, |_| {}).await;
+    let report = run::run(targets, options, run::Cancel::never(), |_| {}).await;
 
     if args.json {
         match report::render_json(&report) {

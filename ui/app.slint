@@ -42,6 +42,15 @@ export struct TargetRow {
     count: string,
     // Header only: the group is folded, its targets are not in the model.
     collapsed: bool,
+    // The verdict's tooltip: what the word means, in one sentence.
+    tip: string,
+    // The verdict is the service's own refusal: the badge draws a hollow dot.
+    hollow: bool,
+    // How the target moved since the run before this one: 0 no change or no
+    // history, 1 better, 2 worse.
+    delta: int,
+    // The verdict of the run before this one, for the delta's tooltip.
+    prev: string,
 }
 
 // One probe of the inspector: what it is, what it saw, and how it reads.
@@ -80,6 +89,10 @@ export global Theme {
     out property <length> radius-sm: 6px;
     out property <string> font: "Adwaita Sans";
     out property <string> mono: "JetBrains Mono";
+    // The desktop's "prefers reduced motion": the eye stops scanning and the
+    // pupil only follows the cursor. Slint 1.18 has no API for the setting, so
+    // the window reads it from the environment (see `gui.rs`).
+    in-out property <bool> reduced-motion: false;
 }
 
 export global Labels {
@@ -231,15 +244,68 @@ export global Labels {
 
     // The run header's count of targets, in the mockup's lowercase.
     in property <string> run-count;
+
+    // The stop button and the run's end.
+    in property <string> stop;
+    in property <string> stopped;
+
+    // The table's filter chips and the counter beside them.
+    in property <string> filter-all;
+    in property <string> filter-blocked;
+    in property <string> filter-ok;
+    in property <string> filter-unknown;
+    in property <string> filter-title;
+    in property <string> shown;
+    in property <string> empty-filter;
+
+    // The search over the target list.
+    in property <string> search;
+
+    // The verdict a target had in the run before this one.
+    in property <string> last-run;
+
+    // The copy button of the inspector.
+    in property <string> copy-title;
+    in property <string> copied;
+    in property <string> copy-failed;
+    in property <string> facts-label;
+
+    // The verdict tooltips of the table.
+    in property <string> tip-ok;
+    in property <string> tip-path;
+    in property <string> tip-svc;
+    in property <string> tip-unknown;
+
+    // The keyboard hints of the status bar.
+    in property <string> key-search;
+    in property <string> key-run;
+    in property <string> key-target;
+    in property <string> key-close;
 }
 
-// The eye of the title bar: the pupil follows the cursor.
+// The eye of the title bar: the pupil follows the cursor, and scans while a
+// run goes on.
 component Eye inherits Rectangle {
     in property <length> dx: 0px;
     in property <length> dy: 0px;
+    // A run is going: the pupil sweeps left and right, as the mockup's eye
+    // does. A reduced-motion desktop keeps it still.
+    in property <bool> scanning: false;
 
     width: 15px;
     height: 15px;
+
+    property <length> sway: 0px;
+    property <bool> sweeping: root.scanning && !Theme.reduced-motion;
+
+    // One sweep is one interval: the pupil is always on its way somewhere.
+    scan := Timer {
+        interval: 550ms;
+        running: root.sweeping;
+        triggered => {
+            root.sway = root.sway > 0px ? -1.6px : 1.6px;
+        }
+    }
 
     Path {
         width: parent.width;
@@ -248,17 +314,20 @@ component Eye inherits Rectangle {
         viewbox-height: 16;
         commands: "M1.6 8C3.6 4.4 5.9 3 8 3s4.4 1.4 6.4 5C12.4 11.6 10.1 13 8 13S3.6 11.6 1.6 8Z";
         stroke: Theme.accent;
-        stroke-width: 1.4px;
+        // The mockup's 1.4 at a 15px box: Slint keeps the stroke in pixels, so
+        // the viewbox's 16 has to be divided out by hand.
+        stroke-width: 1.31px;
         fill: transparent;
     }
 
     Rectangle {
-        x: 7.5px - 2px + root.dx;
+        x: 7.5px - 2px + root.dx + (root.sweeping ? root.sway : 0px);
         y: 7.5px - 2px + root.dy;
         width: 4px;
         height: 4px;
         border-radius: 2px;
         background: Theme.accent;
+        animate x { duration: 550ms; easing: ease-in-out; }
     }
 }
 
@@ -266,6 +335,11 @@ component Eye inherits Rectangle {
 component IconButton inherits Rectangle {
     in property <string> icon;
     in property <bool> enabled: true;
+    // The icon's box and the stroke that goes with it: Slint draws the stroke
+    // in pixels, so a 16-unit viewbox at 15px wants 15/16 of the mockup's
+    // number.
+    in property <length> icon-size: 15px;
+    in property <length> stroke: 1.41px;
     callback clicked();
 
     width: 32px;
@@ -275,15 +349,15 @@ component IconButton inherits Rectangle {
     opacity: root.enabled ? 1 : 0.45;
 
     Path {
-        width: 15px;
-        height: 15px;
+        width: root.icon-size;
+        height: root.icon-size;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         viewbox-width: 16;
         viewbox-height: 16;
         commands: root.icon;
         stroke: touch.has-hover && root.enabled ? Theme.text : Theme.t2;
-        stroke-width: 1.5px;
+        stroke-width: root.stroke;
         fill: transparent;
     }
 
@@ -296,23 +370,27 @@ component IconButton inherits Rectangle {
     }
 }
 
-// The one coral button of the window.
+// The one coral button of the window — or, while a run goes on, the calm stop
+// button of the mockup.
 component RunButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <bool> stop: false;
     callback clicked();
 
     height: 34px;
     min-width: 118px;
     border-radius: Theme.radius;
-    background: touch.pressed && root.enabled ? Theme.accent-press : Theme.accent;
+    background: root.stop
+        ? (touch.pressed ? Theme.surface : Theme.surface-2)
+        : (touch.pressed && root.enabled ? Theme.accent-press : Theme.accent);
     opacity: root.enabled ? 1 : 0.55;
 
     Text {
         text: root.text;
-        color: Theme.on-accent;
+        color: root.stop ? Theme.text : Theme.on-accent;
         font-size: 13px;
-        font-weight: 700;
+        font-weight: root.stop ? 600 : 700;
         horizontal-alignment: center;
         vertical-alignment: center;
         width: parent.width;
@@ -351,7 +429,9 @@ component Check inherits Rectangle {
         viewbox-height: 16;
         commands: "M3 8.5l3.4 3.4L13 5";
         stroke: Theme.on-accent;
-        stroke-width: 2.6px;
+        // The mockup's 2.6 in a 16-unit viewbox, drawn in a 9px box: Slint
+        // keeps the stroke in pixels, so it is 2.6 × 9/16 here.
+        stroke-width: 1.46px;
         fill: transparent;
         visible: root.checked;
     }
@@ -392,6 +472,48 @@ component TextButton inherits Rectangle {
     }
 }
 
+// One filter chip above the table: the word and how many targets it covers.
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <string> count;
+    in property <bool> on;
+    callback clicked();
+
+    height: 22px;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent : transparent;
+    background: root.on ? Theme.accent-soft : (touch.has-hover ? Theme.surface : transparent);
+
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 5px;
+        alignment: LayoutAlignment.center;
+        cross-axis-alignment: center;
+
+        Text {
+            text: root.text;
+            color: root.on ? Theme.accent : (touch.has-hover ? Theme.text : Theme.t3);
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.count;
+            color: root.on ? Theme.accent : Theme.t3;
+            font-family: Theme.mono;
+            font-size: 10.5px;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 // One segment of a two-way switch.
 component Segment inherits Rectangle {
     in property <string> text;
@@ -399,6 +521,8 @@ component Segment inherits Rectangle {
     callback clicked();
 
     height: 24px;
+    // The trough is 7px with a 1px inset: the lit segment follows it.
+    border-radius: 6px;
     background: root.on ? Theme.accent : transparent;
 
     HorizontalLayout {
@@ -491,8 +615,22 @@ component Switch inherits Rectangle {
 component Field inherits Rectangle {
     in-out property <string> text <=> input.text;
     in property <string> placeholder;
+    // The mockup sets the search in the UI font and the addresses in the mono
+    // one.
+    in property <bool> mono: true;
+    // Whether the caret is in this field: the window's hotkeys stay quiet
+    // while it is.
+    out property <bool> focused: input.has-focus;
     callback edited(string);
     callback accepted();
+    // Esc belongs to the window, but the window swallows it before it can
+    // bubble past the field, so the field hands it over itself.
+    callback escape();
+
+    // The "/" key puts the caret here without the user reaching for the mouse.
+    public function take-focus() {
+        input.focus();
+    }
 
     height: 28px;
     border-radius: 7px;
@@ -505,7 +643,7 @@ component Field inherits Rectangle {
         width: parent.width - 16px;
         height: parent.height;
         color: Theme.text;
-        font-family: Theme.mono;
+        font-family: root.mono ? Theme.mono : Theme.font;
         font-size: 11.5px;
         vertical-alignment: center;
         single-line: true;
@@ -515,6 +653,13 @@ component Field inherits Rectangle {
         accepted => {
             root.accepted();
         }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.escape();
+                return accept;
+            }
+            reject
+        }
     }
 
     if input.text == "" && !input.has-focus: Text {
@@ -523,19 +668,36 @@ component Field inherits Rectangle {
         height: parent.height;
         text: root.placeholder;
         color: Theme.t3;
-        font-family: Theme.mono;
+        font-family: root.mono ? Theme.mono : Theme.font;
         font-size: 11.5px;
         vertical-alignment: center;
     }
 }
 
-// One number of the dashboard: the count, its name and the change.
+// One number of the dashboard: the count, its name and the change. A click
+// filters the table by it, as the mockup's stats do.
 component Stat inherits Rectangle {
     in property <string> number;
     in property <string> label;
     in property <string> delta;
     // 0 ok, 1 bad, 2 unknown.
     in property <int> tone;
+    // The table is filtered by this number.
+    in property <bool> active: false;
+    in property <string> tip;
+    callback clicked();
+    callback hovered(string, length, length);
+
+    // The highlight reaches past the text, as the mockup's padding does,
+    // without moving the numbers the 7.1 pass lined up.
+    Rectangle {
+        x: -5px;
+        y: -4px;
+        width: parent.width + 10px;
+        height: parent.height + 8px;
+        border-radius: 7px;
+        background: root.active ? Theme.accent-soft : (touch.has-hover ? Theme.surface : transparent);
+    }
 
     HorizontalLayout {
         spacing: 8px;
@@ -576,13 +738,34 @@ component Stat inherits Rectangle {
             }
         }
     }
+
+    touch := TouchArea {
+        x: -5px;
+        y: -4px;
+        width: parent.width + 10px;
+        height: parent.height + 8px;
+
+        clicked => {
+            root.clicked();
+        }
+
+        changed has-hover => {
+            if (self.has-hover) {
+                root.hovered(root.tip, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.height);
+            } else {
+                root.hovered("", 0px, 0px);
+            }
+        }
+    }
 }
 
-// The wall: one bar split by the three counts.
+// The wall: one bar split by the three counts. A segment filters the table by
+// its own verdict, as the mockup's wall does.
 component Wall inherits Rectangle {
     in property <int> ok;
     in property <int> bad;
     in property <int> unknown;
+    callback pick(int);
 
     height: 8px;
     min-width: 120px;
@@ -595,18 +778,36 @@ component Wall inherits Rectangle {
             border-radius: 4px;
             horizontal-stretch: root.ok;
             visible: root.ok > 0;
+
+            TouchArea {
+                clicked => {
+                    root.pick(2);
+                }
+            }
         }
         Rectangle {
             background: Theme.bad;
             border-radius: 4px;
             horizontal-stretch: root.bad;
             visible: root.bad > 0;
+
+            TouchArea {
+                clicked => {
+                    root.pick(1);
+                }
+            }
         }
         Rectangle {
             background: Theme.warn;
             border-radius: 4px;
             horizontal-stretch: root.unknown;
             visible: root.unknown > 0;
+
+            TouchArea {
+                clicked => {
+                    root.pick(3);
+                }
+            }
         }
     }
 }
@@ -616,6 +817,16 @@ component Badge inherits Rectangle {
     in property <string> text;
     // 0 ok, 1 warn, 2 bad, 3 undetermined, 4 not probed.
     in property <int> level;
+    // The service itself, not the provider: a hollow dot, as the mockup draws
+    // it — the wall is on the way, not at the far end.
+    in property <bool> hollow: false;
+    // What the word means, shown on hover.
+    in property <string> tip;
+    // How the target moved since the run before: 0 no change, 1 better, 2 worse.
+    in property <int> delta: 0;
+    // The verdict of the run before, for the delta's tooltip.
+    in property <string> prev;
+    callback hovered(string, length, length);
 
     height: 18px;
 
@@ -628,13 +839,37 @@ component Badge inherits Rectangle {
             width: 7px;
             height: 7px;
             border-radius: 3.5px;
-            background: root.level == 0 ? Theme.ok : (root.level == 2 ? Theme.bad : (root.level == 1 || root.level == 3 ? Theme.warn : Theme.na));
+            background: root.hollow
+                ? transparent
+                : (root.level == 0 ? Theme.ok : (root.level == 2 ? Theme.bad : (root.level == 1 || root.level == 3 ? Theme.warn : Theme.na)));
+            border-width: root.hollow ? 2px : 0px;
+            border-color: Theme.bad;
         }
         Text {
             text: root.text;
             color: Theme.t2;
             font-size: 11.5px;
             vertical-alignment: center;
+        }
+        // The triangle of a moved verdict: up and green when it got better,
+        // down and red when it got worse.
+        if root.delta != 0: Path {
+            width: 8px;
+            height: 8px;
+            viewbox-width: 8;
+            viewbox-height: 8;
+            commands: root.delta == 1 ? "M4 1L7.2 7H0.8Z" : "M4 7L0.8 1H7.2Z";
+            fill: root.delta == 1 ? Theme.ok : Theme.bad;
+        }
+    }
+
+    touch := TouchArea {
+        changed has-hover => {
+            if (self.has-hover) {
+                root.hovered(root.tip, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.height + 4px);
+            } else {
+                root.hovered("", 0px, 0px);
+            }
         }
     }
 }
@@ -644,6 +879,7 @@ component TableRow inherits Rectangle {
     in property <TargetRow> item;
     in property <bool> selected;
     callback select();
+    callback hovered(string, length, length);
 
     height: 38px;
     border-radius: Theme.radius;
@@ -701,7 +937,14 @@ component TableRow inherits Rectangle {
         Badge {
             text: root.item.verdict;
             level: root.item.level;
+            hollow: root.item.hollow;
+            tip: root.item.tip;
+            delta: root.item.delta;
+            prev: root.item.prev;
             width: 116px;
+            hovered(text, x, y) => {
+                root.hovered(text, x, y);
+            }
         }
 
         Text {
@@ -833,9 +1076,8 @@ component TargetItem inherits Rectangle {
 }
 
 // The tone mark of a probe card: pass, fail, warn and the dash of "no data",
-// all drawn as paths and rectangles — never as font glyphs, which fall out of
-// style. The check is the canonical checkbox tick of the mockup; the dash and
-// the cross are the window's other marks at the same weight.
+// all drawn as paths — never as font glyphs, which fall out of style. The
+// numbers are the mockup's, divided by the 16-unit viewbox the 11px box shows.
 component StepMark inherits Rectangle {
     in property <int> tone;
 
@@ -848,9 +1090,9 @@ component StepMark inherits Rectangle {
         y: 1px;
         viewbox-width: 16;
         viewbox-height: 16;
-        commands: "M3 8.5l3.4 3.4L13 5";
+        commands: "M3 8.5L6.4 11.9L13 5";
         stroke: Theme.ok;
-        stroke-width: 2.6px;
+        stroke-width: 1.65px;
         fill: transparent;
         visible: root.tone == 0;
     }
@@ -860,29 +1102,23 @@ component StepMark inherits Rectangle {
         y: 1px;
         viewbox-width: 16;
         viewbox-height: 16;
-        commands: "M3 3l10 10M13 3L3 13";
+        commands: "M3.5 3.5L12.5 12.5M12.5 3.5L3.5 12.5";
         stroke: Theme.bad;
-        stroke-width: 2.6px;
+        stroke-width: 1.51px;
         fill: transparent;
         visible: root.tone == 1;
     }
-    // The exclamation: a bar and its dot, drawn rather than typed.
-    Rectangle {
-        x: (parent.width - 2.4px) / 2;
+    // The warning: a triangle with its leg, drawn rather than typed.
+    Path {
+        width: 11px;
+        height: 11px;
         y: 1px;
-        width: 2.4px;
-        height: 6.5px;
-        border-radius: 1.2px;
-        background: Theme.warn;
-        visible: root.tone == 2;
-    }
-    Rectangle {
-        x: (parent.width - 2.6px) / 2;
-        y: 9.4px;
-        width: 2.6px;
-        height: 2.6px;
-        border-radius: 1.3px;
-        background: Theme.warn;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M8 2.5L14.5 13.5H1.5ZM8 6.8L8 9.8";
+        stroke: Theme.warn;
+        stroke-width: 1.24px;
+        fill: transparent;
         visible: root.tone == 2;
     }
     Path {
@@ -891,15 +1127,16 @@ component StepMark inherits Rectangle {
         y: 1px;
         viewbox-width: 16;
         viewbox-height: 16;
-        commands: "M3 8h10";
+        commands: "M5 8L11 8";
         stroke: Theme.na;
-        stroke-width: 2.6px;
+        stroke-width: 1.375px;
         fill: transparent;
         visible: root.tone >= 3;
     }
 }
 
-// One probe of the inspector.
+// One probe of the inspector. A step that failed wears the red frame and the
+// red name: where the chain broke is visible at a glance.
 component StepCard inherits Rectangle {
     in property <Step> step;
 
@@ -908,7 +1145,7 @@ component StepCard inherits Rectangle {
     border-radius: Theme.radius;
     background: Theme.bg;
     border-width: 1px;
-    border-color: Theme.line;
+    border-color: root.step.tone == 1 ? Theme.bad : Theme.line;
 
     VerticalLayout {
         padding-top: 6px;
@@ -920,7 +1157,7 @@ component StepCard inherits Rectangle {
 
         Text {
             text: root.step.name;
-            color: Theme.t3;
+            color: root.step.tone == 1 ? Theme.bad : Theme.t3;
             font-size: 10px;
             letter-spacing: 0.3px;
         }
@@ -993,6 +1230,32 @@ export component AppWindow inherits Window {
     in-out property <string> detail-title;
     in-out property <string> detail-badge;
     in-out property <int> detail-level: 4;
+    // The verdict is the service's own refusal: the badge draws a hollow dot.
+    in-out property <bool> detail-hollow: false;
+
+    // The table's filter: 0 none, 1 blocked, 2 available, 3 unknown.
+    in-out property <int> filter: 0;
+    // The search over the target list.
+    in-out property <string> search-text;
+    // "N/M" beside the chips: what the filter lets through of the ticked.
+    in-out property <string> shown-count;
+    // How many targets are ticked: the empty states tell "nothing ticked"
+    // from "nothing matches the filter".
+    in-out property <int> ticked-count: 0;
+    in-out property <string> chip-all;
+    in-out property <string> chip-blocked;
+    in-out property <string> chip-ok;
+    in-out property <string> chip-unknown;
+    // The selected row's place among the visible rows, so the arrow keys can
+    // scroll it into sight.
+    in-out property <int> selected-row: -1;
+
+    // The tooltip: one overlay for the whole window, so it never blocks input.
+    in-out property <string> tip-text;
+    in-out property <bool> tip-visible: false;
+    in-out property <length> tip-x: 0px;
+    in-out property <length> tip-y: 0px;
+    property <bool> tip-pending: false;
 
     // The settings popover.
     in-out property <bool> settings-open: false;
@@ -1003,6 +1266,9 @@ export component AppWindow inherits Window {
     // Adding a target.
     in-out property <bool> adding: false;
     in-out property <string> add-text;
+    // The add field has the caret. The field lives in an `if` block, so its
+    // focus cannot be read from the window's key handler directly.
+    in-out property <bool> add-focused: false;
 
     // A short message at the bottom of the window.
     in-out property <string> toast-text;
@@ -1043,6 +1309,127 @@ export component AppWindow inherits Window {
     callback pick-en();
     callback open-settings();
     callback close-settings();
+    callback pick-filter(int);
+    callback search-edited(string);
+    callback walk(int);
+    callback stop();
+    callback copy();
+
+    // The arrow keys keep the chosen row in sight: the table's rows are 38px
+    // high with a 1px gap, so a row's place is arithmetic.
+    property <length> walk-top: root.selected-row * 39px;
+    property <length> walk-bottom: root.walk-top + 38px;
+    // The inspector covers the bottom of the table. The keys scroll the chosen
+    // row above it, and the table's content gets that much room at the end, so
+    // even the last row can come up.
+    property <length> details-height: 0px;
+
+    // The keys need an owner: without one the window drops every key press,
+    // so the scope takes the focus as the window opens.
+    init => {
+        keys.focus();
+    }
+
+    // The tooltip of a hovered badge or stat: one overlay for the window,
+    // shown after a pause, and it never takes a click.
+    public function show-tip(text: string, x: length, y: length) {
+        if (text == "") {
+            root.tip-pending = false;
+            root.tip-visible = false;
+        } else {
+            root.tip-text = text;
+            root.tip-x = x;
+            root.tip-y = y;
+            root.tip-visible = false;
+            root.tip-pending = true;
+        }
+    }
+
+    // Esc, in order: the settings popover, the add row, the details panel, the
+    // search text. The search keeps the caret: the mockup clears the query and
+    // leaves the field ready for the next one.
+    public function escape-chain() {
+        if (root.settings-open) {
+            root.close-settings();
+        } else if (root.adding) {
+            root.cancel-add();
+        } else if (root.selected >= 0) {
+            root.close-details();
+        } else if (root.search-text != "") {
+            root.search-edited("");
+            search.take-focus();
+        }
+    }
+
+    // The window's keys: "/" search, R run, arrows walk the table, Esc closes.
+    // Esc works inside a text field too; the rest stays quiet there.
+    public function handle-key(event: KeyEvent) -> EventResult {
+        if (event.text == Key.Escape) {
+            root.escape-chain();
+            return accept;
+        }
+        if (search.focused || root.add-focused || socks-field.focused) {
+            return reject;
+        }
+        if (event.text == "/") {
+            search.take-focus();
+            return accept;
+        }
+        if ((event.text == "r" || event.text == "R")
+            && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) {
+            if (!root.running) {
+                root.start();
+            }
+            return accept;
+        }
+        if (event.text == Key.DownArrow) {
+            root.walk(1);
+            return accept;
+        }
+        if (event.text == Key.UpArrow) {
+            root.walk(-1);
+            return accept;
+        }
+        return reject;
+    }
+
+    // The arrow keys keep the chosen row in sight, above the inspector when it
+    // is open.
+    public function keep-in-sight() {
+        if (root.selected-row >= 0) {
+            if (root.walk-top < -table-scroll.content-y) {
+                table-scroll.content-y = -root.walk-top;
+            } else if (root.walk-bottom > -table-scroll.content-y + table-scroll.visible-height - root.details-height) {
+                table-scroll.content-y = -(root.walk-bottom - table-scroll.visible-height + root.details-height);
+            }
+        }
+    }
+
+    changed selected-row => {
+        root.keep-in-sight();
+    }
+
+    // The panel's height arrives a frame after the row is chosen, and it leaves
+    // when the panel closes: both move the line the row has to stay above.
+    changed details-height => {
+        root.keep-in-sight();
+    }
+
+    changed selected => {
+        if (root.selected < 0) {
+            root.details-height = 0px;
+        }
+    }
+
+    // The add row is gone: its field cannot report the lost focus itself, and
+    // the caret it held leaves the window without a key owner, so the scope
+    // takes the keys back.
+    changed adding => {
+        if (!root.adding) {
+            root.add-focused = false;
+            keys.focus();
+        }
+    }
 
     // The cursor, for the eye. The area sits behind the content, so it sees the
     // moves that no button takes.
@@ -1051,894 +1438,1206 @@ export component AppWindow inherits Window {
         y: 0;
         width: parent.width;
         height: parent.height;
+
+        // A click on the bare window takes the caret out of the search, so the
+        // hotkeys come back without reaching for Esc.
+        clicked => {
+            keys.focus();
+        }
     }
 
-    Rectangle {
-        x: root.frame-width;
-        y: root.frame-width;
-        width: parent.width - 2 * root.frame-width;
-        height: parent.height - 2 * root.frame-width;
-        background: Theme.bg;
-        border-radius: Theme.radius-win;
-        clip: true;
+    // The window's keys live here: the scope wraps everything, so it sees a
+    // key before the field that has the caret does.
+    keys := FocusScope {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
 
-        VerticalLayout {
-            // ── title bar: the eye, centred, as niri draws it ──
-            Rectangle {
-                height: 34px;
-                background: Theme.bg;
+        key-pressed(event) => {
+            root.handle-key(event)
+        }
+        capture-key-pressed(event) => {
+            root.handle-key(event)
+        }
 
-                HorizontalLayout {
-                    alignment: LayoutAlignment.center;
-                    spacing: 7px;
+        Rectangle {
+            x: root.frame-width;
+            y: root.frame-width;
+            width: parent.width - 2 * root.frame-width;
+            height: parent.height - 2 * root.frame-width;
+            background: Theme.bg;
+            border-radius: Theme.radius-win;
+            clip: true;
 
-                    Eye {
-                        dx: min(1.6px, max(-1.6px, (cursor.mouse-x - root.width / 2) / 260));
-                        dy: min(1px, max(-1px, (cursor.mouse-y - 17px) / 180));
-                    }
-                    Text {
-                        text: "Oko";
-                        color: Theme.t2;
-                        font-size: 12.5px;
-                        font-weight: 600;
-                        letter-spacing: 0.2px;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // ── the body: targets on the left, the run on the right ──
-            HorizontalLayout {
-                vertical-stretch: 1;
-
-                // The targets panel.
+            VerticalLayout {
+                // ── title bar: the eye, centred, as niri draws it ──
                 Rectangle {
-                    width: 232px;
-                    background: Theme.panel;
-                    border-width: 1px;
-                    border-color: Theme.line;
-
-                    VerticalLayout {
-                        // The panel's head: what it is, and the two bulk boxes.
-                        HorizontalLayout {
-                            padding-top: 10px;
-                            padding-right: 12px;
-                            padding-bottom: 8px;
-                            padding-left: 12px;
-                            spacing: 4px;
-                            cross-axis-alignment: center;
-
-                            Text {
-                                text: Labels.targets;
-                                color: Theme.t2;
-                                font-size: 12px;
-                                font-weight: 600;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                            }
-                            TextButton {
-                                text: Labels.check-all;
-                                clicked => {
-                                    root.check-all();
-                                }
-                            }
-                            TextButton {
-                                text: Labels.check-none;
-                                clicked => {
-                                    root.check-none();
-                                }
-                            }
-                        }
-
-                        // The list scrolls inside the panel: without the zero
-                        // minimum the window would grow to fit every row.
-                        ScrollView {
-                            vertical-stretch: 1;
-                            min-height: 0px;
-
-                            VerticalLayout {
-                                padding-top: 0;
-                                padding-right: 8px;
-                                padding-bottom: 8px;
-                                padding-left: 8px;
-                                spacing: 1px;
-
-                                // A category header takes a breath above it, as
-                                // the mockup's cat-head does (7px).
-                                for entry in root.list: VerticalLayout {
-                                    padding-top: entry.header ? 7px : 0px;
-
-                                    TargetItem {
-                                        item: entry;
-                                        toggle => {
-                                            if entry.header {
-                                                root.toggle-group(entry.group);
-                                            } else {
-                                                root.toggle(entry.index);
-                                            }
-                                        }
-                                        collapse => {
-                                            root.toggle-collapse(entry.group);
-                                        }
-                                        select => {
-                                            root.select(entry.index);
-                                        }
-                                        remove => {
-                                            root.remove(entry.index);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Adding a target happens here, in the list it joins.
-                        if root.adding: VerticalLayout {
-                            padding-top: 0;
-                            padding-right: 10px;
-                            padding-bottom: 10px;
-                            padding-left: 10px;
-                            spacing: 6px;
-
-                            Field {
-                                text: root.add-text;
-                                placeholder: Labels.domain-placeholder;
-                                edited(text) => {
-                                    root.add-text-edited(text);
-                                }
-                                accepted => {
-                                    root.add-domain();
-                                }
-                            }
-                            HorizontalLayout {
-                                spacing: 6px;
-
-                                Rectangle {
-                                    height: 26px;
-                                    horizontal-stretch: 1;
-                                    border-radius: Theme.radius-sm;
-                                    background: add-touch.has-hover ? Theme.accent-press : Theme.accent;
-
-                                    Text {
-                                        text: Labels.add;
-                                        color: Theme.on-accent;
-                                        font-size: 11.5px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                        width: parent.width;
-                                        height: parent.height;
-                                    }
-                                    add-touch := TouchArea {
-                                        clicked => {
-                                            root.add-domain();
-                                        }
-                                    }
-                                }
-                                Rectangle {
-                                    height: 26px;
-                                    horizontal-stretch: 1;
-                                    border-radius: Theme.radius-sm;
-                                    background: cancel-touch.has-hover ? Theme.surface-2 : Theme.surface;
-
-                                    Text {
-                                        text: Labels.cancel;
-                                        color: Theme.t2;
-                                        font-size: 11.5px;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                        width: parent.width;
-                                        height: parent.height;
-                                    }
-                                    cancel-touch := TouchArea {
-                                        clicked => {
-                                            root.cancel-add();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if !root.adding: VerticalLayout {
-                            padding-top: 6px;
-                            padding-right: 10px;
-                            padding-bottom: 10px;
-                            padding-left: 10px;
-
-                            Rectangle {
-                            height: 32px;
-                            border-radius: Theme.radius;
-                            border-width: 1.5px;
-                            border-color: add-button.has-hover ? Theme.accent : Theme.t3;
-                            background: transparent;
-
-                            HorizontalLayout {
-                                alignment: LayoutAlignment.center;
-                                spacing: 6px;
-
-                                Path {
-                                    width: 12px;
-                                    height: 12px;
-                                    viewbox-width: 16;
-                                    viewbox-height: 16;
-                                    commands: "M8 3v10M3 8h10";
-                                    stroke: add-button.has-hover ? Theme.accent : Theme.t3;
-                                    stroke-width: 1.8px;
-                                    fill: transparent;
-                                }
-                                Text {
-                                    text: Labels.add-target;
-                                    color: add-button.has-hover ? Theme.accent : Theme.t3;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
-                            }
-
-                            add-button := TouchArea {
-                                clicked => {
-                                    root.begin-add();
-                                }
-                            }
-                            }
-                        }
-                    }
-                }
-
-                // The run: header, dashboard, table, inspector.
-                Rectangle {
-                    horizontal-stretch: 1;
+                    height: 34px;
                     background: Theme.bg;
 
-                    VerticalLayout {
-                        // The run header: what happened, and the one button.
-                        Rectangle {
-                            height: 56px;
+                    HorizontalLayout {
+                        alignment: LayoutAlignment.center;
+                        // The eye is a fixed 15px box: without this the layout
+                        // pins it to the top of the 34px bar and the label
+                        // hangs below its middle.
+                        cross-axis-alignment: center;
+                        spacing: 7px;
 
+                        Eye {
+                            dx: min(1.6px, max(-1.6px, (cursor.mouse-x - root.width / 2) / 260));
+                            dy: min(1px, max(-1px, (cursor.mouse-y - 17px) / 180));
+                            scanning: root.running;
+                        }
+                        Text {
+                            text: "Oko";
+                            color: Theme.t2;
+                            font-size: 12.5px;
+                            font-weight: 600;
+                            letter-spacing: 0.2px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // ── the body: targets on the left, the run on the right ──
+                HorizontalLayout {
+                    vertical-stretch: 1;
+
+                    // The targets panel.
+                    Rectangle {
+                        width: 232px;
+                        background: Theme.panel;
+                        border-width: 1px;
+                        border-color: Theme.line;
+
+                        VerticalLayout {
+                            // The panel's head: what it is, and the two bulk boxes.
                             HorizontalLayout {
-                                padding-top: 12px;
-                                padding-right: 16px;
-                                padding-bottom: 10px;
-                                padding-left: 16px;
-                                spacing: 12px;
+                                padding-top: 10px;
+                                padding-right: 12px;
+                                padding-bottom: 8px;
+                                padding-left: 12px;
+                                spacing: 4px;
                                 cross-axis-alignment: center;
 
-                                VerticalLayout {
+                                Text {
+                                    text: Labels.targets;
+                                    color: Theme.t2;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
                                     horizontal-stretch: 1;
-                                    spacing: 2px;
-                                    alignment: LayoutAlignment.center;
-
-                                    Text {
-                                        text: root.run-state;
-                                        color: Theme.text;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                        overflow: elide;
-                                    }
-                                    Text {
-                                        text: root.run-sub;
-                                        color: Theme.t3;
-                                        font-family: Theme.mono;
-                                        font-size: 11px;
-                                        overflow: elide;
-                                    }
                                 }
-
-                                IconButton {
-                                    icon: "M8 2.5v7M4.8 7l3.2 3.2L11.2 7M2.8 13.5h10.4";
-                                    enabled: root.export-enabled;
+                                TextButton {
+                                    text: Labels.check-all;
                                     clicked => {
-                                        root.export();
+                                        root.check-all();
                                     }
                                 }
-                                IconButton {
-                                    icon: Theme.dark ? "M13.2 9.4A5.5 5.5 0 1 1 6.6 2.8a4.4 4.4 0 0 0 6.6 6.6Z" : "M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9l1.1 1.1M11 11l1.1 1.1M12.1 3.9L11 5M5 11l-1.1 1.1M8 5.4a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2Z";
+                                TextButton {
+                                    text: Labels.check-none;
                                     clicked => {
-                                        if (Theme.dark) {
-                                            root.pick-light();
-                                        } else {
-                                            root.pick-dark();
-                                        }
-                                    }
-                                }
-                                IconButton {
-                                    icon: "M2 5.5h12M2 10.5h12M5.5 3.5v4M10.5 8.5v4";
-                                    clicked => {
-                                        if (root.settings-open) {
-                                            root.close-settings();
-                                        } else {
-                                            root.open-settings();
-                                        }
-                                    }
-                                }
-                                RunButton {
-                                    text: root.run-label;
-                                    enabled: !root.running;
-                                    clicked => {
-                                        root.start();
+                                        root.check-none();
                                     }
                                 }
                             }
 
-                            // The progress line, at the bottom edge of the header.
-                            Rectangle {
-                                y: parent.height - 2px;
-                                height: 2px;
-                                width: parent.width * root.progress;
-                                background: Theme.accent;
-                                border-radius: 1px;
-                                visible: root.running;
-                            }
-                        }
-
-                        // The dashboard: three numbers and the wall.
-                        HorizontalLayout {
-                            padding-top: 0;
-                            padding-right: 16px;
-                            padding-bottom: 12px;
-                            padding-left: 16px;
-                            spacing: 28px;
-                            cross-axis-alignment: center;
-
-                            Stat {
-                                number: root.dash-ok;
-                                label: Labels.dash-ok;
-                                delta: root.dash-ok-delta;
-                                tone: 0;
-                            }
-                            Stat {
-                                number: root.dash-blocked;
-                                label: Labels.dash-blocked;
-                                delta: root.dash-blocked-delta;
-                                tone: 1;
-                            }
-                            Stat {
-                                number: root.dash-unknown;
-                                label: Labels.dash-unknown;
-                                delta: root.dash-unknown-delta;
-                                tone: 2;
-                            }
-                            Wall {
-                                ok: root.dash-ok-count;
-                                bad: root.dash-blocked-count;
-                                unknown: root.dash-unknown-count;
-                                horizontal-stretch: 1;
-                                vertical-stretch: 0;
-                            }
-                        }
-
-                        // The table's head, outside the scroll so it stays put.
-                        HorizontalLayout {
-                            padding-top: 0;
-                            padding-right: 20px;
-                            padding-bottom: 6px;
-                            padding-left: 20px;
-                            spacing: 10px;
-
-                            Text {
-                                text: Labels.col-target;
-                                color: Theme.t3;
-                                font-size: 10.5px;
-                                min-width: 120px;
-                                horizontal-stretch: 1.3;
-                            }
-                            Text {
-                                text: Labels.col-reason;
-                                color: Theme.t3;
-                                font-size: 10.5px;
-                                min-width: 120px;
-                                horizontal-stretch: 1.5;
-                            }
-                            Text {
-                                text: Labels.col-verdict;
-                                color: Theme.t3;
-                                font-size: 10.5px;
-                                width: 116px;
-                            }
-                            Text {
-                                text: Labels.col-time;
-                                color: Theme.t3;
-                                font-size: 10.5px;
-                                width: 84px;
-                                horizontal-alignment: right;
-                            }
-                        }
-
-                        // The table, or the invitation when there is nothing to
-                        // show.
-                        ScrollView {
-                            vertical-stretch: 1;
-                            min-height: 0px;
-
+                            // The search over the targets, right under the head.
                             VerticalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                padding-bottom: 6px;
+
+                                search := Field {
+                                    text <=> root.search-text;
+                                    placeholder: Labels.search;
+                                    mono: false;
+                                    edited(text) => {
+                                        root.search-edited(text);
+                                    }
+                                    escape => {
+                                        root.escape-chain();
+                                    }
+                                }
+                            }
+
+                            // The list scrolls inside the panel: without the zero
+                            // minimum the window would grow to fit every row.
+                            ScrollView {
+                                vertical-stretch: 1;
+                                min-height: 0px;
+
+                                VerticalLayout {
+                                    padding-top: 0;
+                                    padding-right: 8px;
+                                    padding-bottom: 8px;
+                                    padding-left: 8px;
+                                    spacing: 1px;
+
+                                    // A category header takes a breath above it, as
+                                    // the mockup's cat-head does (7px).
+                                    for entry in root.list: VerticalLayout {
+                                        padding-top: entry.header ? 7px : 0px;
+
+                                        TargetItem {
+                                            item: entry;
+                                            toggle => {
+                                                if entry.header {
+                                                    root.toggle-group(entry.group);
+                                                } else {
+                                                    root.toggle(entry.index);
+                                                }
+                                            }
+                                            collapse => {
+                                                root.toggle-collapse(entry.group);
+                                            }
+                                            select => {
+                                                root.select(entry.index);
+                                            }
+                                            remove => {
+                                                root.remove(entry.index);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Adding a target happens here, in the list it joins.
+                            // The `if` keeps the row out of the layout while it
+                            // is closed: an invisible layout still takes its
+                            // height and would cut the list short.
+                            if root.adding: VerticalLayout {
                                 padding-top: 0;
                                 padding-right: 10px;
-                                padding-bottom: 8px;
+                                padding-bottom: 10px;
                                 padding-left: 10px;
-                                spacing: 1px;
+                                spacing: 6px;
 
-                                for entry in root.rows: TableRow {
-                                    item: entry;
-                                    selected: root.selected == entry.index;
-                                    select => {
-                                        root.select(entry.index);
+                                add-field := Field {
+                                    text <=> root.add-text;
+                                    placeholder: Labels.domain-placeholder;
+                                    // The row opens for typing: the caret is
+                                    // already in the field.
+                                    init => {
+                                        self.take-focus();
+                                    }
+                                    changed focused => {
+                                        root.add-focused = self.focused;
+                                    }
+                                    edited(text) => {
+                                        root.add-text-edited(text);
+                                    }
+                                    accepted => {
+                                        root.add-domain();
+                                    }
+                                    escape => {
+                                        root.escape-chain();
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+
+                                    Rectangle {
+                                        height: 26px;
+                                        horizontal-stretch: 1;
+                                        border-radius: Theme.radius-sm;
+                                        background: add-touch.has-hover ? Theme.accent-press : Theme.accent;
+
+                                        Text {
+                                            text: Labels.add;
+                                            color: Theme.on-accent;
+                                            font-size: 11.5px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: parent.width;
+                                            height: parent.height;
+                                        }
+                                        add-touch := TouchArea {
+                                            clicked => {
+                                                root.add-domain();
+                                            }
+                                        }
+                                    }
+                                    Rectangle {
+                                        height: 26px;
+                                        horizontal-stretch: 1;
+                                        border-radius: Theme.radius-sm;
+                                        background: cancel-touch.has-hover ? Theme.surface-2 : Theme.surface;
+
+                                        Text {
+                                            text: Labels.cancel;
+                                            color: Theme.t2;
+                                            font-size: 11.5px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: parent.width;
+                                            height: parent.height;
+                                        }
+                                        cancel-touch := TouchArea {
+                                            clicked => {
+                                                root.cancel-add();
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        if root.rows.length == 0: VerticalLayout {
-                            vertical-stretch: 1;
-                            alignment: LayoutAlignment.center;
-                            padding-top: 24px;
-                            padding-right: 24px;
-                            padding-bottom: 24px;
-                            padding-left: 24px;
+                            if !root.adding: VerticalLayout {
+                                padding-top: 6px;
+                                padding-right: 10px;
+                                padding-bottom: 10px;
+                                padding-left: 10px;
 
-                            Text {
-                                text: root.list.length == 0 ? Labels.empty-none-title : Labels.empty-norun-title;
-                                color: Theme.t2;
-                                font-size: 15px;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                            }
-                            Text {
-                                text: root.list.length == 0 ? Labels.empty-none-sub : Labels.empty-norun-sub;
-                                color: Theme.t3;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                wrap: word-wrap;
-                                max-width: 340px;
+                                Rectangle {
+                                height: 32px;
+                                border-radius: Theme.radius;
+                                border-width: 1.5px;
+                                border-color: add-button.has-hover ? Theme.accent : Theme.t3;
+                                background: transparent;
+
+                                HorizontalLayout {
+                                    alignment: LayoutAlignment.center;
+                                    cross-axis-alignment: center;
+                                    spacing: 6px;
+
+                                    Path {
+                                        width: 12px;
+                                        height: 12px;
+                                        vertical-stretch: 0;
+                                        viewbox-width: 16;
+                                        viewbox-height: 16;
+                                        commands: "M8 3v10M3 8h10";
+                                        stroke: add-button.has-hover ? Theme.accent : Theme.t3;
+                                        stroke-width: 1.35px;
+                                        fill: transparent;
+                                    }
+                                    Text {
+                                        text: Labels.add-target;
+                                        color: add-button.has-hover ? Theme.accent : Theme.t3;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                add-button := TouchArea {
+                                    clicked => {
+                                        root.begin-add();
+                                    }
+                                }
+                                }
                             }
                         }
                     }
 
-                    // The inspector: the probes of the chosen row, over the
-                    // table, above the status bar.
-                    if root.selected >= 0: Rectangle {
-                        x: 12px;
-                        y: parent.height - self.height - 8px;
-                        width: parent.width - 24px;
-                        height: inspector.preferred-height;
-                        background: Theme.surface;
-                        border-radius: 10px;
-                        border-width: 1px;
-                        border-color: Theme.line;
-                        drop-shadow-color: #00000073;
-                        drop-shadow-blur: 40px;
-                        drop-shadow-offset-y: 16px;
-                        clip: true;
+                    // The run: header, dashboard, table, inspector.
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.bg;
 
-                        inspector := VerticalLayout {
-                            padding-top: 12px;
-                            padding-right: 14px;
-                            padding-bottom: 12px;
-                            padding-left: 14px;
-                            spacing: 10px;
+                        VerticalLayout {
+                            // The run header: what happened, and the one button.
+                            Rectangle {
+                                height: 56px;
 
-                            // The head: the target, its verdict, and the way out.
+                                HorizontalLayout {
+                                    padding-top: 12px;
+                                    padding-right: 16px;
+                                    padding-bottom: 10px;
+                                    padding-left: 16px;
+                                    spacing: 12px;
+                                    cross-axis-alignment: center;
+
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        alignment: LayoutAlignment.center;
+
+                                        // The run's summary is a long line: the
+                                        // mockup's 13px would elide it in the
+                                        // column the actions leave.
+                                        Text {
+                                            text: root.run-state;
+                                            color: Theme.text;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: root.run-sub;
+                                            color: Theme.t3;
+                                            font-family: Theme.mono;
+                                            font-size: 11px;
+                                            overflow: elide;
+                                        }
+                                    }
+
+                                    // The actions sit closer to each other than
+                                    // to the run's own line, as the mockup sets
+                                    // them: 8px inside the group, 12px outside.
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        cross-axis-alignment: center;
+
+                                        IconButton {
+                                            icon: "M8 2.5v7M4.8 7l3.2 3.2L11.2 7M2.8 13.5h10.4";
+                                            enabled: root.export-enabled;
+                                            clicked => {
+                                                root.export();
+                                            }
+                                        }
+                                        IconButton {
+                                            icon: Theme.dark ? "M13.2 9.4A5.5 5.5 0 1 1 6.6 2.8a4.4 4.4 0 0 0 6.6 6.6Z" : "M8 2.2v1.6M8 12.2v1.6M2.2 8h1.6M12.2 8h1.6M3.9 3.9l1.1 1.1M11 11l1.1 1.1M12.1 3.9L11 5M5 11l-1.1 1.1M8 5.4a2.6 2.6 0 1 0 0 5.2 2.6 2.6 0 0 0 0-5.2Z";
+                                            clicked => {
+                                                if (Theme.dark) {
+                                                    root.pick-light();
+                                                } else {
+                                                    root.pick-dark();
+                                                }
+                                            }
+                                        }
+                                        IconButton {
+                                            icon: "M2 5.5h12M2 10.5h12M5.5 3.5v4M10.5 8.5v4";
+                                            clicked => {
+                                                if (root.settings-open) {
+                                                    root.close-settings();
+                                                } else {
+                                                    root.open-settings();
+                                                }
+                                            }
+                                        }
+                                        RunButton {
+                                            text: root.run-label;
+                                            stop: root.running;
+                                            clicked => {
+                                                if (root.running) {
+                                                    root.stop();
+                                                } else {
+                                                    root.start();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // The progress line, at the bottom edge of the header.
+                                Rectangle {
+                                    y: parent.height - 2px;
+                                    height: 2px;
+                                    width: parent.width * root.progress;
+                                    background: Theme.accent;
+                                    border-radius: 1px;
+                                    visible: root.running;
+                                }
+                            }
+
+                            // The dashboard: three numbers and the wall.
                             HorizontalLayout {
-                                spacing: 10px;
+                                padding-top: 0;
+                                padding-right: 16px;
+                                padding-bottom: 12px;
+                                padding-left: 16px;
+                                spacing: 28px;
                                 cross-axis-alignment: center;
 
-                                Text {
-                                    text: root.detail-title;
-                                    color: Theme.text;
-                                    font-size: 14px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
+                                Stat {
+                                    number: root.dash-ok;
+                                    label: Labels.dash-ok;
+                                    delta: root.dash-ok-delta;
+                                    tone: 0;
+                                    active: root.filter == 2;
+                                    tip: Labels.filter-title;
+                                    clicked => {
+                                        root.pick-filter(2);
+                                    }
+                                    hovered(text, x, y) => {
+                                        root.show-tip(text, x, y);
+                                    }
                                 }
-                                Badge {
-                                    text: root.detail-badge;
-                                    level: root.detail-level;
+                                Stat {
+                                    number: root.dash-blocked;
+                                    label: Labels.dash-blocked;
+                                    delta: root.dash-blocked-delta;
+                                    tone: 1;
+                                    active: root.filter == 1;
+                                    tip: Labels.filter-title;
+                                    clicked => {
+                                        root.pick-filter(1);
+                                    }
+                                    hovered(text, x, y) => {
+                                        root.show-tip(text, x, y);
+                                    }
+                                }
+                                Stat {
+                                    number: root.dash-unknown;
+                                    label: Labels.dash-unknown;
+                                    delta: root.dash-unknown-delta;
+                                    tone: 2;
+                                    active: root.filter == 3;
+                                    tip: Labels.filter-title;
+                                    clicked => {
+                                        root.pick-filter(3);
+                                    }
+                                    hovered(text, x, y) => {
+                                        root.show-tip(text, x, y);
+                                    }
+                                }
+                                Wall {
+                                    ok: root.dash-ok-count;
+                                    bad: root.dash-blocked-count;
+                                    unknown: root.dash-unknown-count;
+                                    horizontal-stretch: 1;
                                     vertical-stretch: 0;
+                                    pick(code) => {
+                                        root.pick-filter(code);
+                                    }
                                 }
+                            }
+
+                            // The filter chips: what the table is narrowed to,
+                            // and how much of the ticked list they let through.
+                            HorizontalLayout {
+                                padding-top: 0;
+                                padding-right: 16px;
+                                padding-bottom: 8px;
+                                padding-left: 16px;
+                                spacing: 4px;
+                                cross-axis-alignment: center;
+
+                                Chip {
+                                    text: Labels.filter-all;
+                                    count: root.chip-all;
+                                    on: root.filter == 0;
+                                    clicked => {
+                                        root.pick-filter(0);
+                                    }
+                                }
+                                Chip {
+                                    text: Labels.filter-blocked;
+                                    count: root.chip-blocked;
+                                    on: root.filter == 1;
+                                    clicked => {
+                                        root.pick-filter(1);
+                                    }
+                                }
+                                Chip {
+                                    text: Labels.filter-ok;
+                                    count: root.chip-ok;
+                                    on: root.filter == 2;
+                                    clicked => {
+                                        root.pick-filter(2);
+                                    }
+                                }
+                                Chip {
+                                    text: Labels.filter-unknown;
+                                    count: root.chip-unknown;
+                                    on: root.filter == 3;
+                                    clicked => {
+                                        root.pick-filter(3);
+                                    }
+                                }
+
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     height: 1px;
                                     background: transparent;
                                 }
-                                IconButton {
-                                    icon: "M3 3l10 10M13 3L3 13";
-                                    width: 24px;
-                                    height: 24px;
-                                    clicked => {
-                                        root.close-details();
-                                    }
-                                }
-                            }
 
-                            // The probes, one card each. The mockup lets them
-                            // wrap; a grid of four does the same in a fixed
-                            // width, and keeps the notes readable.
-                            GridLayout {
-                                spacing: 6px;
-
-                                for step[i] in root.steps: StepCard {
-                                    step: step;
-                                    row: i / 4;
-                                    col: Math.mod(i, 4);
-                                }
-                            }
-
-                            // The facts, in the report's own words.
-                            if root.facts.length > 0: VerticalLayout {
-                                spacing: 2px;
-                                alignment: LayoutAlignment.start;
-
-                                for fact in root.facts: Text {
-                                    text: fact;
-                                    color: Theme.t2;
+                                Text {
+                                    text: Labels.shown + " " + root.shown-count;
+                                    color: Theme.t3;
                                     font-family: Theme.mono;
                                     font-size: 10.5px;
-                                    wrap: word-wrap;
+                                    vertical-alignment: center;
                                 }
                             }
-                        }
-                    }
-                }
-            }
 
-            // ── the status bar: what the run was given. The keys carry the
-            // accent, the values stay muted, the tunnel's "ok" speaks green ──
-            Rectangle {
-                height: 26px;
-                background: Theme.panel;
-                border-width: 1px;
-                border-color: Theme.line;
+                            // The table's head, outside the scroll so it stays put.
+                            HorizontalLayout {
+                                padding-top: 0;
+                                padding-right: 20px;
+                                padding-bottom: 6px;
+                                padding-left: 20px;
+                                spacing: 10px;
 
-                HorizontalLayout {
-                    padding-top: 0;
-                    padding-right: 14px;
-                    padding-bottom: 0;
-                    padding-left: 14px;
-                    spacing: 14px;
-                    cross-axis-alignment: center;
-
-                    HorizontalLayout {
-                        spacing: 5px;
-
-                        Text {
-                            text: "tunnel";
-                            color: Theme.accent;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: root.sb-tunnel;
-                            color: Theme.t3;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                        if root.sb-tunnel-ok: Text {
-                            text: "ok";
-                            color: Theme.ok;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 5px;
-
-                        Text {
-                            text: "timeout";
-                            color: Theme.accent;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: root.sb-timeout;
-                            color: Theme.t3;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 5px;
-
-                        Text {
-                            text: "probes";
-                            color: Theme.accent;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: root.sb-probes;
-                            color: Theme.t3;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 5px;
-
-                        Text {
-                            text: "run";
-                            color: Theme.accent;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: root.sb-run;
-                            color: Theme.t3;
-                            font-family: Theme.mono;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                    }
-                    Text {
-                        text: root.sb-version;
-                        color: Theme.t3;
-                        font-family: Theme.mono;
-                        font-size: 10.5px;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
-    }
-
-    // ── the settings popover ──
-    if root.settings-open: Rectangle {
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: parent.height;
-        background: transparent;
-
-        // A click anywhere else closes it.
-        TouchArea {
-            clicked => {
-                root.close-settings();
-            }
-        }
-
-        Rectangle {
-            x: parent.width - self.width - 12px;
-            y: 54px;
-            width: 264px;
-            height: settings-body.preferred-height + 24px;
-            background: Theme.surface;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: Theme.line;
-            drop-shadow-color: #00000073;
-            drop-shadow-blur: 40px;
-            drop-shadow-offset-y: 16px;
-            clip: true;
-
-            // The popover takes its own clicks, so they do not reach the
-            // closing area behind it.
-            TouchArea {
-                clicked => {}
-            }
-
-            settings-body := VerticalLayout {
-                padding-top: 12px;
-                padding-right: 14px;
-                padding-bottom: 12px;
-                padding-left: 14px;
-                spacing: 10px;
-
-                HorizontalLayout {
-                    spacing: 10px;
-                    cross-axis-alignment: center;
-
-                    Text {
-                        text: Labels.timeout;
-                        color: Theme.t2;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Rectangle {
-                        width: 96px;
-                        height: 26px;
-                        border-radius: 7px;
-                        background: Theme.bg;
-                        border-width: 1px;
-                        border-color: Theme.line;
-
-                        HorizontalLayout {
-                            padding-top: 1px;
-                            padding-right: 1px;
-                            padding-bottom: 1px;
-                            padding-left: 1px;
-                            spacing: 1px;
-
-                            Rectangle {
-                                width: 24px;
-                                background: minus.has-hover ? Theme.surface-2 : transparent;
-                                border-radius: 6px;
-
-                                Path {
-                                    width: 12px;
-                                    height: 12px;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                    viewbox-width: 16;
-                                    viewbox-height: 16;
-                                    commands: "M3 8h10";
-                                    stroke: minus.has-hover ? Theme.text : Theme.t2;
-                                    stroke-width: 1.8px;
-                                    fill: transparent;
+                                Text {
+                                    text: Labels.col-target;
+                                    color: Theme.t3;
+                                    font-size: 10.5px;
+                                    min-width: 120px;
+                                    horizontal-stretch: 1.3;
                                 }
-                                minus := TouchArea {
-                                    clicked => {
-                                        root.timeout-dec();
+                                Text {
+                                    text: Labels.col-reason;
+                                    color: Theme.t3;
+                                    font-size: 10.5px;
+                                    min-width: 120px;
+                                    horizontal-stretch: 1.5;
+                                }
+                                Text {
+                                    text: Labels.col-verdict;
+                                    color: Theme.t3;
+                                    font-size: 10.5px;
+                                    width: 116px;
+                                }
+                                Text {
+                                    text: Labels.col-time;
+                                    color: Theme.t3;
+                                    font-size: 10.5px;
+                                    width: 84px;
+                                    horizontal-alignment: right;
+                                }
+                            }
+
+                            // The table, or the invitation when there is nothing to
+                            // show.
+                            table-scroll := ScrollView {
+                                vertical-stretch: 1;
+                                min-height: 0px;
+
+                                VerticalLayout {
+                                    padding-top: 0;
+                                    padding-right: 10px;
+                                    // Room for the inspector, so the last row can
+                                    // still be scrolled above it.
+                                    padding-bottom: root.details-height + 8px;
+                                    padding-left: 10px;
+                                    spacing: 1px;
+
+                                    for entry in root.rows: TableRow {
+                                        item: entry;
+                                        selected: root.selected == entry.index;
+                                        select => {
+                                            root.select(entry.index);
+                                        }
+                                        hovered(text, x, y) => {
+                                            root.show-tip(text, x, y);
+                                        }
                                     }
                                 }
                             }
+
+                            if root.rows.length == 0: VerticalLayout {
+                                vertical-stretch: 1;
+                                alignment: LayoutAlignment.center;
+                                padding-top: 24px;
+                                padding-right: 24px;
+                                padding-bottom: 24px;
+                                padding-left: 24px;
+
+                                Text {
+                                    text: root.ticked-count == 0
+                                        ? Labels.empty-none-title
+                                        : (root.filter != 0 ? Labels.empty-filter : Labels.empty-norun-title);
+                                    color: Theme.t2;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                if root.filter == 0: Text {
+                                    text: root.ticked-count == 0 ? Labels.empty-none-sub : Labels.empty-norun-sub;
+                                    color: Theme.t3;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                    max-width: 340px;
+                                }
+                            }
+                        }
+
+                        // The inspector: the probes of the chosen row, over the
+                        // table, above the status bar.
+                        if root.selected >= 0: Rectangle {
+                            x: 12px;
+                            y: parent.height - self.height - 8px;
+                            width: parent.width - 24px;
+                            height: inspector.preferred-height;
+                            background: Theme.surface;
+                            border-radius: 10px;
+                            border-width: 1px;
+                            border-color: Theme.line;
+                            drop-shadow-color: #00000073;
+                            drop-shadow-blur: 40px;
+                            drop-shadow-offset-y: 16px;
+                            clip: true;
+
+                            // The table keeps the chosen row above this panel.
+                            init => {
+                                root.details-height = self.height;
+                            }
+                            changed height => {
+                                root.details-height = self.height;
+                            }
+
+                            inspector := VerticalLayout {
+                                padding-top: 12px;
+                                padding-right: 14px;
+                                padding-bottom: 12px;
+                                padding-left: 14px;
+                                spacing: 10px;
+
+                                // The head: the target, its verdict, and the way out.
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    cross-axis-alignment: center;
+
+                                    Text {
+                                        text: root.detail-title;
+                                        color: Theme.text;
+                                        font-size: 14px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Badge {
+                                        text: root.detail-badge;
+                                        level: root.detail-level;
+                                        hollow: root.detail-hollow;
+                                        vertical-stretch: 0;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 1px;
+                                        background: transparent;
+                                    }
+                                    // The result as text: the domain, the verdict,
+                                    // the ladder and the facts.
+                                    IconButton {
+                                        icon: "M5.5 5.5h8v8h-8zM10.5 5.5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4.5a2 2 0 0 0 2 2h1.5";
+                                        width: 24px;
+                                        height: 24px;
+                                        icon-size: 12px;
+                                        stroke: 1.13px;
+                                        clicked => {
+                                            root.copy();
+                                        }
+                                    }
+                                    IconButton {
+                                        icon: "M3 3l10 10M13 3L3 13";
+                                        width: 24px;
+                                        height: 24px;
+                                        clicked => {
+                                            root.close-details();
+                                        }
+                                    }
+                                }
+
+                                // The probes, one card each. The mockup lets them
+                                // wrap; a grid of four does the same in a fixed
+                                // width, and keeps the notes readable.
+                                GridLayout {
+                                    spacing: 6px;
+
+                                    for step[i] in root.steps: StepCard {
+                                        step: step;
+                                        row: i / 4;
+                                        col: Math.mod(i, 4);
+                                    }
+                                }
+
+                                // The facts, in the report's own words.
+                                if root.facts.length > 0: VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: LayoutAlignment.start;
+
+                                    for fact in root.facts: Text {
+                                        text: fact;
+                                        color: Theme.t2;
+                                        font-family: Theme.mono;
+                                        font-size: 10.5px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── the status bar: what the run was given. The keys carry the
+                // accent, the values stay muted, the tunnel's "ok" speaks green ──
+                Rectangle {
+                    height: 26px;
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.line;
+
+                    HorizontalLayout {
+                        padding-top: 0;
+                        padding-right: 14px;
+                        padding-bottom: 0;
+                        padding-left: 14px;
+                        spacing: 14px;
+                        cross-axis-alignment: center;
+
+                        HorizontalLayout {
+                            spacing: 5px;
+
                             Text {
-                                text: "\{root.timeout-value}";
-                                color: Theme.text;
+                                text: "tunnel";
+                                color: Theme.accent;
                                 font-family: Theme.mono;
-                                font-size: 12px;
-                                horizontal-alignment: center;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.sb-tunnel;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            if root.sb-tunnel-ok: Text {
+                                text: "ok";
+                                color: Theme.ok;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 5px;
+
+                            Text {
+                                text: "timeout";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.sb-timeout;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 5px;
+
+                            Text {
+                                text: "probes";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.sb-probes;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 5px;
+
+                            Text {
+                                text: "run";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: root.sb-run;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                             }
-                            Rectangle {
-                                width: 24px;
-                                background: plus.has-hover ? Theme.surface-2 : transparent;
-                                border-radius: 6px;
+                        }
+                        // The keys, as the mockup writes them: the key in the
+                        // accent, what it does in the muted grey.
+                        HorizontalLayout {
+                            spacing: 4px;
 
-                                Path {
-                                    width: 12px;
-                                    height: 12px;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                    viewbox-width: 16;
-                                    viewbox-height: 16;
-                                    commands: "M8 3v10M3 8h10";
-                                    stroke: plus.has-hover ? Theme.text : Theme.t2;
-                                    stroke-width: 1.8px;
-                                    fill: transparent;
-                                }
-                                plus := TouchArea {
-                                    clicked => {
-                                        root.timeout-inc();
-                                    }
-                                }
+                            Text {
+                                text: "/";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: Labels.key-search;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "·";
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "R";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: Labels.key-run;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "·";
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "↑↓";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: Labels.key-target;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "·";
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Esc";
+                                color: Theme.accent;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: Labels.key-close;
+                                color: Theme.t3;
+                                font-family: Theme.mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
                             }
                         }
-                    }
-                }
-
-                Text {
-                    text: Labels.timeout-hint;
-                    color: Theme.t3;
-                    font-size: 10px;
-                    wrap: word-wrap;
-                }
-
-                HorizontalLayout {
-                    spacing: 10px;
-                    cross-axis-alignment: center;
-
-                    Text {
-                        text: Labels.socks5;
-                        color: Theme.t2;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Field {
-                        width: 118px;
-                        text: root.socks5-text;
-                        placeholder: Labels.socks5-placeholder;
-                        edited(text) => {
-                            root.socks5-edited(text);
-                        }
-                    }
-                }
-
-                Text {
-                    text: Labels.socks5-hint;
-                    color: Theme.t3;
-                    font-size: 10px;
-                    wrap: word-wrap;
-                }
-
-                HorizontalLayout {
-                    spacing: 10px;
-                    cross-axis-alignment: center;
-
-                    Text {
-                        text: Labels.theme;
-                        color: Theme.t2;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Segmented {
-                        left: Labels.dark;
-                        right: Labels.light;
-                        left-on: Theme.dark;
-                        pick-left => {
-                            root.pick-dark();
-                        }
-                        pick-right => {
-                            root.pick-light();
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 10px;
-                    cross-axis-alignment: center;
-
-                    Text {
-                        text: Labels.language;
-                        color: Theme.t2;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Segmented {
-                        left: "RU";
-                        right: "EN";
-                        left-on: root.lang == "ru";
-                        pick-left => {
-                            root.pick-ru();
-                        }
-                        pick-right => {
-                            root.pick-en();
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 10px;
-                    cross-axis-alignment: center;
-
-                    Text {
-                        text: Labels.frame;
-                        color: Theme.t2;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Switch {
-                        on: root.frame;
-                        toggled => {
-                            root.toggle-frame();
+                        Text {
+                            text: root.sb-version;
+                            color: Theme.t3;
+                            font-family: Theme.mono;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
                         }
                     }
                 }
             }
         }
-    }
 
-    // ── the toast ──
-    if root.toast-visible: Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: parent.height - self.height - 40px;
-        width: toast-label.preferred-width + 28px;
-        height: 32px;
-        border-radius: 9px;
-        background: Theme.surface-2;
-        border-width: 1px;
-        border-color: Theme.line;
-        drop-shadow-color: #00000066;
-        drop-shadow-blur: 30px;
-        drop-shadow-offset-y: 10px;
-
-        toast-label := Text {
-            text: root.toast-text;
-            color: Theme.text;
-            font-size: 12px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        // ── the settings popover ──
+        Rectangle {
+            visible: root.settings-open;
+            x: 0;
+            y: 0;
             width: parent.width;
             height: parent.height;
+            background: transparent;
+
+            // A click anywhere else closes it.
+            TouchArea {
+                clicked => {
+                    root.close-settings();
+                }
+            }
+
+            Rectangle {
+                x: parent.width - self.width - 12px;
+                y: 54px;
+                width: 264px;
+                height: settings-body.preferred-height + 24px;
+                background: Theme.surface;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.line;
+                drop-shadow-color: #00000073;
+                drop-shadow-blur: 40px;
+                drop-shadow-offset-y: 16px;
+                clip: true;
+
+                // The popover takes its own clicks, so they do not reach the
+                // closing area behind it.
+                TouchArea {
+                    clicked => {}
+                }
+
+                settings-body := VerticalLayout {
+                    padding-top: 12px;
+                    padding-right: 14px;
+                    padding-bottom: 12px;
+                    padding-left: 14px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+
+                        Text {
+                            text: Labels.timeout;
+                            color: Theme.t2;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Rectangle {
+                            width: 96px;
+                            height: 26px;
+                            border-radius: 7px;
+                            background: Theme.bg;
+                            border-width: 1px;
+                            border-color: Theme.line;
+
+                            HorizontalLayout {
+                                padding-top: 1px;
+                                padding-right: 1px;
+                                padding-bottom: 1px;
+                                padding-left: 1px;
+                                spacing: 1px;
+
+                                Rectangle {
+                                    width: 24px;
+                                    background: minus.has-hover ? Theme.surface-2 : transparent;
+                                    border-radius: 6px;
+
+                                    Path {
+                                        width: 12px;
+                                        height: 12px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        viewbox-width: 16;
+                                        viewbox-height: 16;
+                                        commands: "M3 8h10";
+                                        stroke: minus.has-hover ? Theme.text : Theme.t2;
+                                        stroke-width: 1.8px;
+                                        fill: transparent;
+                                    }
+                                    minus := TouchArea {
+                                        clicked => {
+                                            root.timeout-dec();
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: "\{root.timeout-value}";
+                                    color: Theme.text;
+                                    font-family: Theme.mono;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                                Rectangle {
+                                    width: 24px;
+                                    background: plus.has-hover ? Theme.surface-2 : transparent;
+                                    border-radius: 6px;
+
+                                    Path {
+                                        width: 12px;
+                                        height: 12px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        viewbox-width: 16;
+                                        viewbox-height: 16;
+                                        commands: "M8 3v10M3 8h10";
+                                        stroke: plus.has-hover ? Theme.text : Theme.t2;
+                                        stroke-width: 1.8px;
+                                        fill: transparent;
+                                    }
+                                    plus := TouchArea {
+                                        clicked => {
+                                            root.timeout-inc();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: Labels.timeout-hint;
+                        color: Theme.t3;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+
+                        Text {
+                            text: Labels.socks5;
+                            color: Theme.t2;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        socks-field := Field {
+                            width: 118px;
+                            text <=> root.socks5-text;
+                            placeholder: Labels.socks5-placeholder;
+                            edited(text) => {
+                                root.socks5-edited(text);
+                            }
+                            escape => {
+                                root.escape-chain();
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: Labels.socks5-hint;
+                        color: Theme.t3;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+
+                        Text {
+                            text: Labels.theme;
+                            color: Theme.t2;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Segmented {
+                            left: Labels.dark;
+                            right: Labels.light;
+                            left-on: Theme.dark;
+                            pick-left => {
+                                root.pick-dark();
+                            }
+                            pick-right => {
+                                root.pick-light();
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+
+                        Text {
+                            text: Labels.language;
+                            color: Theme.t2;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Segmented {
+                            left: "RU";
+                            right: "EN";
+                            left-on: root.lang == "ru";
+                            pick-left => {
+                                root.pick-ru();
+                            }
+                            pick-right => {
+                                root.pick-en();
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+
+                        Text {
+                            text: Labels.frame;
+                            color: Theme.t2;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Switch {
+                            on: root.frame;
+                            toggled => {
+                                root.toggle-frame();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── the toast ──
+        if root.toast-visible: Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 40px;
+            width: toast-label.preferred-width + 28px;
+            height: 32px;
+            border-radius: 9px;
+            background: Theme.surface-2;
+            border-width: 1px;
+            border-color: Theme.line;
+            drop-shadow-color: #00000066;
+            drop-shadow-blur: 30px;
+            drop-shadow-offset-y: 10px;
+
+            toast-label := Text {
+                text: root.toast-text;
+                color: Theme.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        // ── the tooltip: a badge's meaning, after a pause ──
+        if root.tip-visible && root.tip-text != "": Rectangle {
+            x: min(root.width - self.width - 8px, max(8px, root.tip-x - self.width / 2));
+            y: min(root.height - self.height - 8px, root.tip-y);
+            width: tip-label.preferred-width + 20px;
+            height: 26px;
+            border-radius: 7px;
+            background: Theme.surface-2;
+            border-width: 1px;
+            border-color: Theme.line;
+            drop-shadow-color: #00000066;
+            drop-shadow-blur: 20px;
+            drop-shadow-offset-y: 6px;
+
+            tip-label := Text {
+                text: root.tip-text;
+                color: Theme.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+
+        // The pause before a tooltip shows, as the mockup's half second.
+        tip-timer := Timer {
+            interval: 500ms;
+            running: root.tip-pending;
+            triggered => {
+                root.tip-visible = true;
+                root.tip-pending = false;
+            }
         }
     }
 }

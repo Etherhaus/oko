@@ -178,7 +178,7 @@
   @keyframes insp-pop{from{opacity:0; transform:translateY(7px)} to{opacity:1; transform:none}}
   .insp-head{display:flex; align-items:center; gap:10px; margin-bottom:10px}
   .insp-head .dom{font-size:14px; font-weight:700}
-  .insp-close{margin-left:auto}
+  .insp-copy{margin-left:auto}
   .insp-steps{display:flex; gap:6px; margin-bottom:10px; flex-wrap:wrap}
   .step{
     flex:1; min-width:88px; background:var(--bg); border:1px solid var(--line);
@@ -246,6 +246,33 @@
   .trow.pending .badge .dot{animation:pulse .9s ease-in-out infinite}
   @keyframes pulse{50%{opacity:.2}}
 
+  /* ── 7.1: фильтры таблицы, поиск, дельты, глаз-скан, стоп ── */
+  .tbl-bar{flex:none; display:flex; align-items:center; gap:6px; padding:0 16px 8px}
+  .chips{display:flex; gap:4px}
+  .chip{
+    font-family:var(--font); font-size:11px; color:var(--t3); background:none;
+    border:1px solid transparent; border-radius:7px; padding:2.5px 9px; cursor:pointer;
+  }
+  .chip:hover{color:var(--text); background:var(--surface)}
+  .chip.on{color:var(--accent); border-color:var(--accent); background:color-mix(in srgb, var(--accent) 9%, transparent)}
+  .tbl-bar .shown{margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--t3)}
+  .t-search{flex:none; margin:0 10px 6px; display:flex}
+  .t-search input{
+    width:100%; background:var(--bg); border:1px solid var(--line); border-radius:7px;
+    color:var(--text); font-family:var(--font); font-size:11.5px; padding:4px 8px;
+  }
+  .t-search input::placeholder{color:var(--t3)}
+  .t-search input:focus{outline:1.5px solid var(--accent); outline-offset:0}
+  .badge .chg{display:flex; align-items:center}
+  .chg svg{display:block}
+  .stat{cursor:pointer; border-radius:7px; padding:2px 5px; margin-left:-5px}
+  .stat:hover{background:var(--surface)}
+  .stat.filt{background:color-mix(in srgb, var(--accent) 9%, transparent)}
+  .v-svc .dot{background:transparent; border:2px solid var(--bad)}
+  .btn-run.stop{background:var(--surface2); color:var(--text); font-weight:600}
+  .brand.scan circle{animation:scan 1.1s ease-in-out infinite}
+  @keyframes scan{0%,100%{transform:translateX(-1.6px)} 50%{transform:translateX(1.6px)}}
+
   @media (prefers-reduced-motion: reduce){
     *{transition:none !important; animation:none !important}
   }
@@ -273,6 +300,7 @@
           <button id="bulk-none">Ничего</button>
         </div>
       </div>
+      <div class="t-search"><input type="text" id="q" placeholder="поиск цели…" autocomplete="off"></div>
       <div class="t-scroll" id="sidebar"></div>
       <button class="t-add" id="btn-add">
         <svg width="12" height="12" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" fill="none"><path d="M8 3v10M3 8h10"/></svg>
@@ -305,6 +333,11 @@
 
       <div class="dash" id="dash"></div>
 
+      <div class="tbl-bar">
+        <div class="chips" id="chips"></div>
+        <span class="shown" id="shown"></span>
+      </div>
+
       <div class="tablewrap" id="tablewrap">
         <div class="trow head">
           <span>Цель</span><span>Причина</span><span>Вердикт</span><span style="text-align:right">Время</span>
@@ -316,6 +349,9 @@
         <div class="insp-head">
           <span class="dom" id="insp-dom"></span>
           <span class="badge" id="insp-badge"></span>
+          <button class="icon-btn insp-copy" id="insp-copy" style="width:24px;height:24px" title="Скопировать результат">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="5.5" width="8" height="8" rx="2"/><path d="M10.5 5.5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4.5a2 2 0 0 0 2 2h1.5"/></svg>
+          </button>
           <button class="icon-btn insp-close" id="insp-close" style="width:24px;height:24px">
             <svg width="11" height="11" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" fill="none"><path d="M3 3l10 10M13 3L3 13"/></svg>
           </button>
@@ -331,6 +367,7 @@
     <span id="st-timeout"><span class="a">timeout</span> 5s</span>
     <span><span class="a">probes</span> 8/target</span>
     <span><span class="a">run</span> 192s</span>
+    <span id="st-keys"><span class="a">R</span> прогон · <span class="a">↑↓</span> цель · <span class="a">Esc</span> закрыть</span>
     <span style="margin-left:auto">oko 0.4.0 · etherhaus</span>
   </footer>
 
@@ -378,12 +415,12 @@ const T = [
   {c:"im",     d:"web.whatsapp.com",     v:"unknown",why:"QUIC молчит, признаки смешанные", ms:9210},
   {c:"ai",     d:"chatgpt.com",          v:"svc",    why:"гео-блок сервиса · и в туннеле закрыто", ms:4120},
   {c:"ai",     d:"claude.ai",            v:"svc",    why:"гео-блок сервиса · и в туннеле закрыто", ms:3870},
-  {c:"ai",     d:"gemini.google.com",     v:"ok",     why:"напрямую и в туннеле ок", ms:1720},
-  {c:"news",   d:"bbc.com",              v:"path",   why:"DPI по SNI · в туннеле доступно", ms:4550},
+  {c:"ai",     d:"gemini.google.com",     v:"ok",     why:"напрямую и в туннеле ок", ms:1720, prev:"svc"},
+  {c:"news",   d:"bbc.com",              v:"path",   why:"DPI по SNI · в туннеле доступно", ms:4550, prev:"ok"},
   {c:"news",   d:"dw.com",               v:"ok",     why:"напрямую и в туннеле ок", ms:1310},
   {c:"news",   d:"meduza.io",            v:"path",   why:"DNS-подмена + DPI · в туннеле доступно", ms:5090},
   {c:"search", d:"google.com",           v:"ok",     why:"напрямую и в туннеле ок", ms:890},
-  {c:"search", d:"duckduckgo.com",       v:"ok",     why:"напрямую и в туннеле ок", ms:940},
+  {c:"search", d:"duckduckgo.com",       v:"ok",     why:"напрямую и в туннеле ок", ms:940, prev:"unknown"},
   {c:"astream",d:"open.spotify.com",     v:"ok",     why:"напрямую и в туннеле ок", ms:1120},
   {c:"vstream",d:"www.twitch.tv",        v:"ok",     why:"напрямую и в туннеле ок", ms:1580},
   {c:"vstream",d:"netflix.com",          v:"svc",    why:"гео-блок сервиса · и в туннеле закрыто", ms:2960},
@@ -430,15 +467,21 @@ const L = {
   ru:{targets:"Цели", add:"Добавить цель", run:"Проверить", running:"Проверяю…",
       done:"Прогон завершён", ok:"доступно", path:"провайдер", svc:"сам сервис", unknown:"неизвестно",
       dl:"доступно", db:"режется", du:"неизвестно", tgt:"целей",
-      empty1:"Ни одна цель не отмечена", empty2:"Отметь цели слева — Oko покажет, где стены, а где вас не пускает сам сервис."},
+      empty1:"Ни одна цель не отмечена", empty2:"Отметь цели слева — Oko покажет, где стены, а где вас не пускает сам сервис.",
+      f_all:"все", f_bad:"режется", f_ok:"доступно", f_un:"неизвестно", ftitle:"фильтр таблицы",
+      q:"поиск цели…", stop:"Остановить", stopped:"Прогон остановлен",
+      copied:"скопировано: вердикт + лестница + факты", was:"в прошлый раз", nosh:"Под фильтр ничего не попало"},
   en:{targets:"Targets", add:"Add target", run:"Run", running:"Running…",
       done:"Run complete", ok:"available", path:"provider", svc:"service", unknown:"unknown",
       dl:"available", db:"blocked", du:"unknown", tgt:"targets",
-      empty1:"No targets selected", empty2:"Check targets on the left — Oko will show where the walls are."},
+      empty1:"No targets selected", empty2:"Check targets on the left — Oko will show where the walls are.",
+      f_all:"all", f_bad:"blocked", f_ok:"available", f_un:"unknown", ftitle:"filter the table",
+      q:"filter targets…", stop:"Stop", stopped:"Run stopped",
+      copied:"copied: verdict + ladder + facts", was:"last run", nosh:"Nothing matches this filter"},
 };
-const S = {lang:"ru", theme:"dark", frame:true, sel:null, running:false};
+const S = {lang:"ru", theme:"dark", frame:true, sel:null, running:false, filter:null, q:""};
 const vname = v => ({ok:L[S.lang].ok, path:L[S.lang].path, svc:L[S.lang].svc, unknown:L[S.lang].unknown})[v];
-const vclass = v => ({ok:"v-ok", path:"v-bad", svc:"v-bad", unknown:"v-un"})[v];
+const vclass = v => ({ok:"v-ok", path:"v-bad", svc:"v-svc", unknown:"v-un"})[v];
 
 function steps(t){
   const dns = (t.d==="meduza.io")
@@ -484,7 +527,8 @@ function renderSidebar(){
   const el = document.getElementById("sidebar");
   el.innerHTML = "";
   for(const c of CATS){
-    const items = T.filter(t=>t.c===c.id);
+    const items = T.filter(t=>t.c===c.id && t.d.includes(S.q));
+    if(!items.length) continue;
     const on = items.filter(t=>t.checked).length;
     const box = document.createElement("div");
     box.className = "cat" + (OPEN_BY_DEFAULT.includes(c.id) ? "" : " collapsed");
@@ -532,28 +576,61 @@ function renderDash(){
   const ok = a.filter(t=>t.v==="ok").length,
         bad = a.filter(t=>t.v==="path"||t.v==="svc").length,
         un = a.filter(t=>t.v==="unknown").length;
-  const tot = a.length||1;
   const D = [
-    {cls:"ok", n:ok,  lab:L[S.lang].dl, d:"-1", dc:"worse"},
-    {cls:"bad", n:bad, lab:L[S.lang].db, d:"+1", dc:"better"},
-    {cls:"un",  n:un,  lab:L[S.lang].du, d:"·",  dc:""},
+    {cls:"ok", f:"ok",  n:ok,  lab:L[S.lang].dl, d:"-1", dc:"worse"},
+    {cls:"bad", f:"bad", n:bad, lab:L[S.lang].db, d:"+1", dc:"better"},
+    {cls:"un",  f:"un",  n:un,  lab:L[S.lang].du, d:"·",  dc:""},
   ];
   document.getElementById("dash").innerHTML =
-    D.map(s=>`<div class="stat ${s.cls}"><span class="n">${s.n}</span>
+    D.map(s=>`<div class="stat ${s.cls}${S.filter===s.f?" filt":""}" data-f="${s.f}" title="${L[S.lang].ftitle}"><span class="n">${s.n}</span>
       <span class="lab">${s.lab}</span><span class="delta ${s.dc}">${s.d}</span></div>`).join("")
     + `<div class="wall">
         <i class="w-ok" style="flex:${ok}"></i><i class="w-bad" style="flex:${bad}"></i><i class="w-un" style="flex:${un}"></i>
       </div>`;
 }
+function renderChips(){
+  const F = [["", "f_all"], ["bad","f_bad"], ["ok","f_ok"], ["un","f_un"]];
+  document.getElementById("chips").innerHTML = F.map(([v,k]) =>
+    `<button class="chip ${S.filter===v || (!v&&!S.filter) ?"on":""}" data-f="${v}">${L[S.lang][k]}</button>`).join("");
+}
+document.getElementById("chips").addEventListener("click", e=>{
+  const v = e.target.dataset.f; if(v===undefined) return;
+  S.filter = v==="" ? null : v;
+  renderChips(); renderDash(); renderTable();
+});
+document.getElementById("dash").addEventListener("click", e=>{
+  const st = e.target.closest(".stat"); if(!st) return;
+  S.filter = S.filter===st.dataset.f ? null : st.dataset.f;
+  renderChips(); renderDash(); renderTable();
+});
 
 const ORDER = {path:0, svc:1, unknown:2, ok:3};
+const FMAP = v => ({ok:"ok", path:"bad", svc:"bad", unknown:"un"})[v];
+const RANK = {ok:0, unknown:1, svc:2, path:3};
+function visibleRows(){
+  return active().filter(t=>!S.filter || FMAP(t.v)===S.filter)
+    .sort((a,b)=>ORDER[a.v]-ORDER[b.v] || a.ms-b.ms);
+}
+function chg(t){
+  if(!t.prev || t.prev===t.v || RANK[t.v]===RANK[t.prev]) return "";
+  const better = RANK[t.v] < RANK[t.prev];
+  const path = better ? "M4 1l3.2 6H.8z" : "M4 7L.8 1h6.4z";
+  const col = better ? "var(--ok)" : "var(--bad)";
+  return `<span class="chg" title="${L[S.lang].was}: ${vname(t.prev)}">
+    <svg width="8" height="8" viewBox="0 0 8 8" fill="${col}"><path d="${path}"/></svg></span>`;
+}
 function renderTable(){
   const el = document.getElementById("tbody");
   el.innerHTML = "";
-  const rows = active().slice().sort((a,b)=>ORDER[a.v]-ORDER[b.v] || a.ms-b.ms);
-  if(!rows.length){
+  const rows = visibleRows();
+  document.getElementById("shown").textContent = active().length ? `${rows.length}/${active().length}` : "";
+  if(!active().length){
     el.innerHTML = `<div class="empty"><div class="big">${L[S.lang].empty1}</div>
       <div class="sub">${L[S.lang].empty2}</div></div>`;
+    return;
+  }
+  if(!rows.length){
+    el.innerHTML = `<div class="empty"><div class="big">${L[S.lang].nosh}</div></div>`;
     return;
   }
   for(const t of rows){
@@ -563,14 +640,14 @@ function renderTable(){
     r.innerHTML = `
       <span class="dom">${t.d}<small>${CATS.find(c=>c.id===t.c)[S.lang]}</small></span>
       <span class="why">${t.why}</span>
-      <span class="badge ${vclass(t.v)}"><span class="dot"></span>${vname(t.v)}</span>
+      <span class="badge ${vclass(t.v)}"><span class="dot"></span>${vname(t.v)}${chg(t)}</span>
       <span class="ms">${t.ms>=1000?(t.ms/1000).toFixed(1)+" с":t.ms+" мс"}</span>`;
     r.addEventListener("click", ()=>showInspector(t.d));
     el.appendChild(r);
   }
 }
 
-function renderAll(){ renderSidebar(); renderDash(); renderTable();
+function renderAll(){ renderSidebar(); renderDash(); renderChips(); renderTable();
   document.querySelector(".run-meta .sub").innerHTML =
     `сегодня, 21:42 · <b>3 мин 12 с</b> · ${active().length} ${L[S.lang].tgt}`;
   if(S.sel && !T.find(t=>t.d===S.sel && t.checked)) hideInspector();
@@ -626,6 +703,7 @@ document.getElementById("seg-lang").addEventListener("click", e=>{
   document.getElementById("lbl-targets").textContent = L[v].targets;
   document.getElementById("lbl-add").textContent = L[v].add;
   document.getElementById("btn-run").textContent = L[v].run;
+  document.getElementById("q").placeholder = L[v].q;
   document.getElementById("run-state").textContent = L[v].done;
   document.querySelectorAll("#seg-lang button").forEach(b=>b.classList.toggle("on", b.dataset.v===v));
   renderAll(); if(S.sel) showInspector(S.sel);
@@ -635,36 +713,44 @@ document.getElementById("sw-frame").addEventListener("click", function(){
   win.classList.toggle("noframe", !S.frame);
 });
 
-/* ── демо-прогон: UI не блокируется, прогресс виден ── */
+/* ── прогон: UI не блокируется, прогресс виден, глаз сканирует, можно остановить ── */
 const btnRun = document.getElementById("btn-run");
-btnRun.addEventListener("click", ()=>{
+const brandEl = document.querySelector(".titlebar .brand");
+let runIv = null, runRows = [];
+function startRun(){
   if(S.running) return;
   S.running = true;
-  const label = btnRun.textContent;
-  btnRun.disabled = true; btnRun.textContent = L[S.lang].running;
+  btnRun.textContent = L[S.lang].stop;
+  btnRun.classList.add("stop");
+  brandEl.classList.add("scan");
   document.getElementById("run-state").textContent = L[S.lang].running;
-  const rows = [...document.querySelectorAll("#tbody .trow")];
+  runRows = [...document.querySelectorAll("#tbody .trow")];
+  runRows.forEach(r=>r.classList.add("pending"));
   const line = document.getElementById("runline");
-  rows.forEach(r=>r.classList.add("pending"));
   let i = 0;
-  const iv = setInterval(()=>{
-    if(i < rows.length){
-      rows[i].classList.remove("pending");
-      rows[i].classList.add("flash");
-      setTimeout(()=>rows[i-1] && rows[i-1].classList.remove("flash"), 120);
-      line.style.width = ((i+1)/rows.length*100)+"%";
-      btnRun.textContent = `${L[S.lang].running} ${i+1}/${rows.length}`;
+  runIv = setInterval(()=>{
+    if(i < runRows.length){
+      runRows[i].classList.remove("pending");
+      runRows[i].classList.add("flash");
+      if(runRows[i-1]) runRows[i-1].classList.remove("flash");
+      line.style.width = ((i+1)/runRows.length*100)+"%";
+      document.getElementById("run-state").textContent = `${L[S.lang].running} ${i+1}/${runRows.length}`;
       i++;
-    } else {
-      clearInterval(iv);
-      rows.forEach(r=>r.classList.remove("flash","pending"));
-      line.style.width = "0%";
-      btnRun.disabled = false; btnRun.textContent = L[S.lang].run;
-      document.getElementById("run-state").textContent = L[S.lang].done;
-      S.running = false;
-    }
+    } else { endRun(L[S.lang].done); }
   }, 90);
-});
+}
+function endRun(stateMsg){
+  clearInterval(runIv); runIv = null;
+  runRows.forEach(r=>r.classList.remove("flash","pending"));
+  document.getElementById("runline").style.width = "0%";
+  btnRun.classList.remove("stop");
+  btnRun.textContent = L[S.lang].run;
+  document.getElementById("run-state").textContent = stateMsg;
+  brandEl.classList.remove("scan");
+  if(pupil) pupil.setAttribute("transform", "translate(0 0)");
+  S.running = false;
+}
+btnRun.addEventListener("click", ()=>{ S.running ? endRun(L[S.lang].stopped) : startRun(); });
 
 /* ── глаз следит за курсором: «око, которое смотрит на смотрящего» ── */
 const pupil = document.querySelector(".titlebar .brand circle");
@@ -702,6 +788,37 @@ socksIn.addEventListener("input", ()=>{
   document.getElementById("st-tunnel").innerHTML = v
     ? `<span class="a">tunnel</span> ${v} <span class="g">ok</span>`
     : `<span class="a">tunnel</span> off — диффа не будет`;
+});
+
+/* ── поиск по целям ── */
+const qIn = document.getElementById("q");
+qIn.addEventListener("input", ()=>{ S.q = qIn.value.trim().toLowerCase(); renderSidebar(); });
+
+/* ── клавиатура: R — прогон, ↑/↓ — выбор, Esc — закрыть ── */
+document.addEventListener("keydown", e=>{
+  if(e.key==="Escape"){
+    if(!pop.hidden){ pop.hidden = true; return; }
+    if(S.sel){ hideInspector(); return; }
+    if(S.q){ qIn.value=""; S.q=""; renderSidebar(); qIn.focus(); }
+    return;
+  }
+  if(e.target.matches("input")) return;
+  if(e.code==="KeyR" && !S.running){ startRun(); return; }
+  if((e.key==="ArrowDown"||e.key==="ArrowUp") && !S.running){
+    const rows = visibleRows(); if(!rows.length) return;
+    e.preventDefault();
+    let i = rows.findIndex(t=>t.d===S.sel);
+    if(e.key==="ArrowDown") i = i<0 ? 0 : Math.min(rows.length-1, i+1);
+    else i = i<0 ? 0 : Math.max(0, i-1);
+    showInspector(rows[i].d);
+    const r = document.querySelector(`.trow[data-d="${rows[i].d}"]`);
+    if(r) r.scrollIntoView({block:"nearest"});
+  }
+});
+
+/* ── копия результата цели ── */
+document.getElementById("insp-copy").addEventListener("click", ()=>{
+  if(S.sel) toast(`${S.sel} — ${L[S.lang].copied}`);
 });
 
 renderAll();

@@ -313,6 +313,61 @@ labels! {
 
     // The run's own count of targets, in the lowercase of the mockup.
     run_count, set_run_count => ("targets", "целей"),
+
+    // The stop button and the run's end.
+    stop, set_stop => ("Stop", "Остановить"),
+    stopped, set_stopped => ("Run stopped", "Прогон остановлен"),
+
+    // The table's filter chips and the counter beside them.
+    filter_all, set_filter_all => ("all", "все"),
+    filter_blocked, set_filter_blocked => ("blocked", "режется"),
+    filter_ok, set_filter_ok => ("available", "доступно"),
+    filter_unknown, set_filter_unknown => ("unknown", "неизвестно"),
+    filter_title, set_filter_title => ("filter the table", "фильтр таблицы"),
+    shown, set_shown => ("shown", "показано"),
+    empty_filter, set_empty_filter => (
+        "Nothing matches this filter",
+        "Под фильтр ничего не попало"
+    ),
+
+    // The search over the target list.
+    search, set_search => ("filter targets…", "поиск цели…"),
+
+    // The verdict a target had in the run before this one.
+    last_run, set_last_run => ("last run", "в прошлый раз"),
+
+    // The copy button of the inspector.
+    copy_title, set_copy_title => ("Copy the result", "Скопировать результат"),
+    copied, set_copied => (
+        "copied: verdict + ladder + facts",
+        "скопировано: вердикт + лестница + факты"
+    ),
+    copy_failed, set_copy_failed => ("could not copy", "не удалось скопировать"),
+    facts_label, set_facts_label => ("facts", "факты"),
+
+    // The verdict tooltips of the table.
+    tip_ok, set_tip_ok => (
+        "target is fully reachable: DNS, TLS, HTTP all clean",
+        "цель доступна целиком: DNS, TLS, HTTP — чисто"
+    ),
+    tip_path, set_tip_path => (
+        "connection is cut by the provider (TSPU/DPI on SNI)",
+        "соединение обрывает провайдер (ТСПУ/DPI по SNI)"
+    ),
+    tip_svc, set_tip_svc => (
+        "blocked by the service itself: region or account policy",
+        "не пускает сам сервис: регион, аккаунт или его гео-политика"
+    ),
+    tip_unknown, set_tip_unknown => (
+        "probes lack data — open the inspector",
+        "пробам не хватило данных — открой инспектор"
+    ),
+
+    // The keyboard hints of the status bar.
+    key_search, set_key_search => ("search", "поиск"),
+    key_run, set_key_run => ("run", "прогон"),
+    key_target, set_key_target => ("target", "цель"),
+    key_close, set_key_close => ("close", "закрыть"),
 }
 
 #[cfg(test)]

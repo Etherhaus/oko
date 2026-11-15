@@ -14,6 +14,10 @@ name = "oko"
 path = "src/main.rs"
 
 [dependencies]
+# Slint 1.18 has no public clipboard API, so the inspector's copy button
+# talks to the platform itself. Already in the tree through the winit
+# backend, so this adds no new crates.
+arboard = "3.7"
 clap = { version = "4.6", features = ["derive"] }
 # The window. The default backend is winit with the femtovg renderer; the
 # portal-backed file dialog keeps GTK out of the build.

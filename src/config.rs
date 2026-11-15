@@ -38,6 +38,18 @@ pub struct RunSummary {
     pub unknown: usize,
 }
 
+/// The verdict one target had at the end of the last full run.
+///
+/// The table compares it with the fresh verdict and draws a triangle when the
+/// target moved. It is the window's own memory: the exported report keeps its
+/// own fields and never reads this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrevVerdict {
+    pub domain: String,
+    /// The verdict kind the table showed, in the engine's own words.
+    pub verdict: String,
+}
+
 /// Everything the window remembers between runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -67,6 +79,11 @@ pub struct Config {
     /// The last runs, oldest first.
     #[serde(default)]
     pub history: Vec<RunSummary>,
+    /// The verdict each target had at the end of the last full run. A stopped
+    /// or interrupted run leaves it alone: the delta compares two complete
+    /// runs, not a run and a half.
+    #[serde(default)]
+    pub prev: Vec<PrevVerdict>,
 }
 
 fn default_version() -> u32 {
@@ -97,6 +114,7 @@ impl Default for Config {
             checked: None,
             custom: Vec::new(),
             history: Vec::new(),
+            prev: Vec::new(),
         }
     }
 }
@@ -170,6 +188,19 @@ impl Config {
     pub fn last(&self) -> Option<&RunSummary> {
         self.history.last()
     }
+
+    /// The verdict a target had at the end of the last full run.
+    pub fn prev_of(&self, domain: &str) -> Option<&str> {
+        self.prev
+            .iter()
+            .find(|entry| entry.domain == domain)
+            .map(|entry| entry.verdict.as_str())
+    }
+
+    /// Replace the remembered verdicts with the ones a full run just produced.
+    pub fn remember_verdicts(&mut self, verdicts: Vec<PrevVerdict>) {
+        self.prev = verdicts;
+    }
 }
 
 /// The config directory of this platform.
@@ -223,6 +254,7 @@ mod tests {
         assert!(config.checked.is_none(), "nothing saved means all ticked");
         assert!(config.custom.is_empty());
         assert!(config.history.is_empty());
+        assert!(config.prev.is_empty(), "no run yet, nothing to compare");
     }
 
     #[test]
@@ -238,6 +270,10 @@ mod tests {
             ..Config::default()
         };
         config.remember(summary("2026-11-14T17:24:45Z", 2, 4, 0));
+        config.remember_verdicts(vec![PrevVerdict {
+            domain: "github.com".to_string(),
+            verdict: "dpi_sni".to_string(),
+        }]);
 
         let text = config.to_json();
         let back = Config::from_json(&text).expect("the file it wrote parses");
@@ -290,6 +326,32 @@ mod tests {
         config.remember(summary("second", 2, 1, 0));
         assert_eq!(config.previous().map(|run| run.at.as_str()), Some("first"));
         assert_eq!(config.last().map(|run| run.at.as_str()), Some("second"));
+    }
+
+    #[test]
+    fn the_remembered_verdicts_are_the_ones_of_the_last_full_run() {
+        let mut config = Config::default();
+        assert_eq!(config.prev_of("github.com"), None, "no run yet");
+        config.remember_verdicts(vec![
+            PrevVerdict {
+                domain: "github.com".to_string(),
+                verdict: "dpi_sni".to_string(),
+            },
+            PrevVerdict {
+                domain: "youtube.com".to_string(),
+                verdict: "ok".to_string(),
+            },
+        ]);
+        assert_eq!(config.prev_of("github.com"), Some("dpi_sni"));
+        assert_eq!(config.prev_of("youtube.com"), Some("ok"));
+        assert_eq!(config.prev_of("example.org"), None, "a target the run did not cover");
+        // A second full run replaces the memory instead of growing it.
+        config.remember_verdicts(vec![PrevVerdict {
+            domain: "github.com".to_string(),
+            verdict: "ok".to_string(),
+        }]);
+        assert_eq!(config.prev_of("github.com"), Some("ok"));
+        assert_eq!(config.prev_of("youtube.com"), None);
     }
 
     #[test]

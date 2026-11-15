@@ -50,6 +50,10 @@ struct Row {
     started: Option<Instant>,
     /// How long they took, in milliseconds.
     ms: Option<u64>,
+    /// The verdict the table showed at the end of the last full run, taken
+    /// when a run starts: the triangle keeps pointing at the run before this
+    /// one while this one is still going.
+    prev: Option<String>,
 }
 
 impl Row {
@@ -62,13 +66,27 @@ impl Row {
             tunnel: None,
             started: None,
             ms: None,
+            prev: None,
         }
+    }
+
+    /// The verdict the table shows for this row, or an empty kind before the
+    /// first run.
+    fn kind(&self) -> &'static str {
+        self.report.as_ref().map(display).map(|(kind, _)| kind).unwrap_or("")
     }
 
     /// The row as the list and the table show it.
     fn view(&self, index: usize, strings: &Strings, pending: bool) -> TargetRow {
         let shown = self.report.as_ref().map(display);
         let kind = shown.map(|(kind, _)| kind).unwrap_or("");
+        let delta = self.delta();
+        let mut tip = tip(kind, strings).to_string();
+        if delta != 0 {
+            if let Some(prev) = &self.prev {
+                tip = format!("{tip} · {}: {}", strings.last_run, badge(prev, strings));
+            }
+        }
         TargetRow {
             index: index as i32,
             group: 0,
@@ -85,6 +103,105 @@ impl Row {
             // Header-only fields: a target row leaves them empty.
             count: "".into(),
             collapsed: false,
+            tip: tip.into(),
+            hollow: hollow(kind),
+            delta,
+            prev: self.prev.clone().unwrap_or_default().into(),
+        }
+    }
+
+    /// How the target moved since the run before this one: 0 no change or no
+    /// history, 1 better, 2 worse.
+    fn delta(&self) -> i32 {
+        let Some(prev) = &self.prev else {
+            return 0;
+        };
+        let kind = self.kind();
+        if kind.is_empty() {
+            return 0;
+        }
+        match rank(kind).cmp(&rank(prev)) {
+            std::cmp::Ordering::Less => 1,
+            std::cmp::Ordering::Greater => 2,
+            std::cmp::Ordering::Equal => 0,
+        }
+    }
+}
+
+/// The ladder of the verdicts, best first: a definite answer beats an
+/// uncertain one, and the service's own refusal beats the provider's cut.
+fn rank(kind: &str) -> i32 {
+    match kind {
+        "ok" | "both_ok" => 0,
+        "unknown" => 1,
+        "geo_block_by_service" | "service_block" => 2,
+        "" => 4,
+        _ => 3,
+    }
+}
+
+/// The service's own refusal: the badge draws a hollow dot, because the wall
+/// is on the way, not at the far end.
+fn hollow(kind: &str) -> bool {
+    matches!(kind, "geo_block_by_service" | "service_block")
+}
+
+/// What a verdict word means, in one sentence, for the badge's tooltip.
+fn tip(kind: &str, strings: &Strings) -> &'static str {
+    match kind {
+        "ok" | "both_ok" => strings.tip_ok,
+        "geo_block_by_service" | "service_block" => strings.tip_svc,
+        "unknown" => strings.tip_unknown,
+        "" => "",
+        _ => strings.tip_path,
+    }
+}
+
+/// The table's filter: one bucket of the verdicts, or all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Filter {
+    #[default]
+    All,
+    Blocked,
+    Ok,
+    Unknown,
+}
+
+impl Filter {
+    /// The code the window's chips, stats and wall speak.
+    fn code(self) -> i32 {
+        match self {
+            Filter::All => 0,
+            Filter::Blocked => 1,
+            Filter::Ok => 2,
+            Filter::Unknown => 3,
+        }
+    }
+
+    fn from_code(code: i32) -> Filter {
+        match code {
+            1 => Filter::Blocked,
+            2 => Filter::Ok,
+            3 => Filter::Unknown,
+            _ => Filter::All,
+        }
+    }
+
+    /// The bucket a verdict kind falls into. A target that has not been probed
+    /// is in none of them: it shows under "all" only.
+    fn of(kind: &str) -> Option<Filter> {
+        match kind {
+            "" => None,
+            "ok" | "both_ok" => Some(Filter::Ok),
+            "unknown" => Some(Filter::Unknown),
+            _ => Some(Filter::Blocked),
+        }
+    }
+
+    fn keeps(self, kind: &str) -> bool {
+        match self {
+            Filter::All => true,
+            filter => Filter::of(kind) == Some(filter),
         }
     }
 }
@@ -281,6 +398,7 @@ enum Status {
     Ready,
     Checking { done: usize, total: usize },
     Done,
+    Stopped,
     ControlDead,
     Interrupted(String),
     Failed(String),
@@ -288,12 +406,28 @@ enum Status {
 
 impl Status {
     /// The state, in one short line.
-    fn state(&self, strings: &Strings) -> String {
+    fn state(&self, app: &App, strings: &Strings) -> String {
         match self {
             Status::Ready => strings.ready.to_string(),
-            // The counter lives on the button; the header only says what is going on.
-            Status::Checking { .. } => strings.checking.to_string(),
-            Status::Done => strings.done.to_string(),
+            // The counter lives here; the button says what it does.
+            Status::Checking { done, total } => {
+                format!("{} {done}/{total}…", strings.checking.trim_end_matches('…'))
+            }
+            // The run's own count, in the words of the chips.
+            Status::Done => match app.config.last() {
+                Some(last) => format!(
+                    "{}: {} {} · {} {} · {} {}",
+                    strings.done,
+                    strings.filter_blocked,
+                    last.blocked,
+                    strings.filter_ok,
+                    last.ok,
+                    strings.filter_unknown,
+                    last.unknown
+                ),
+                None => strings.done.to_string(),
+            },
+            Status::Stopped => strings.stopped.to_string(),
             Status::ControlDead => strings.control_dead_short.to_string(),
             Status::Interrupted(_) => strings.interrupted.to_string(),
             Status::Failed(_) => strings.run_failed.to_string(),
@@ -358,6 +492,15 @@ struct App {
     collapsed: Vec<bool>,
     /// The settings popover is an overlay, not a screen.
     settings_open: bool,
+    /// The table's filter and the search over the list. The window's own
+    /// state: neither is written to the file.
+    filter: Filter,
+    search: String,
+    /// The stop button was pressed: the run ends after the target it is on,
+    /// and the history and the remembered verdicts stay as they were.
+    stopping: bool,
+    /// The token the running thread reads.
+    cancel: run::Cancel,
     /// The table's order: the worst verdicts first, so the walls are on top.
     /// It is fixed while a run goes on and sorted when one ends.
     order: Vec<usize>,
@@ -418,6 +561,10 @@ impl App {
             add_text: String::new(),
             collapsed: vec![false; Category::GROUPS.len()],
             settings_open: false,
+            filter: Filter::All,
+            search: String::new(),
+            stopping: false,
+            cancel: run::Cancel::never(),
             order,
             toast: None,
             running: false,
@@ -463,6 +610,27 @@ impl App {
             .collect();
         let _ = self.config.save();
     }
+
+    /// Remember what this run said about each target, for the next run's
+    /// delta. Only a full run calls this: a stopped one leaves the memory of
+    /// the last complete run alone.
+    fn remember_prev(&mut self) {
+        let verdicts = self
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let kind = row.kind();
+                if kind.is_empty() {
+                    return None;
+                }
+                Some(config::PrevVerdict {
+                    domain: row.target.domain.clone(),
+                    verdict: kind.to_string(),
+                })
+            })
+            .collect();
+        self.config.remember_verdicts(verdicts);
+    }
 }
 
 /// What the UI asks a run to do, and what the run tells the UI.
@@ -473,7 +641,7 @@ enum Event {
 }
 
 /// Start one run on its own thread: its own tokio runtime, its own id.
-fn spawn_run(id: u64, targets: Vec<Target>, options: Options, events: mpsc::Sender<Event>) {
+fn spawn_run(id: u64, targets: Vec<Target>, options: Options, cancel: run::Cancel, events: mpsc::Sender<Event>) {
     thread::spawn(move || {
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
@@ -483,11 +651,23 @@ fn spawn_run(id: u64, targets: Vec<Target>, options: Options, events: mpsc::Send
             }
         };
         let sender = events.clone();
-        let report = runtime.block_on(run::run(targets, options, move |progress| {
+        let report = runtime.block_on(run::run(targets, options, cancel, move |progress| {
             let _ = sender.send(Event::Progress(id, Box::new(progress)));
         }));
         let _ = events.send(Event::Finished(id, Box::new(report)));
     });
+}
+
+/// The desktop's "prefers reduced motion".
+///
+/// Slint 1.18 has no API for the setting, so the window reads it from the
+/// environment: `OKO_REDUCED_MOTION` for the screenshots, and the GTK switch
+/// the desktops actually flip. A desktop that says nothing keeps the motion.
+fn reduced_motion() -> bool {
+    if std::env::var_os("OKO_REDUCED_MOTION").is_some() {
+        return true;
+    }
+    std::env::var("GTK_ENABLE_ANIMATIONS").is_ok_and(|value| value == "0")
 }
 
 /// Open the window and run it until it closes.
@@ -515,6 +695,7 @@ pub fn run() -> ExitCode {
         i18n::apply(&ui, state.lang);
         ui.set_lang(state.lang.code().into());
         ui.global::<Theme>().set_dark(state.dark);
+        ui.global::<Theme>().set_reduced_motion(reduced_motion());
         ui.set_timeout_value(state.timeout as i32);
         ui.set_frame(state.frame);
         ui.set_socks5_text(state.socks5.clone().into());
@@ -556,8 +737,48 @@ pub fn run() -> ExitCode {
     if let Ok(group) = std::env::var("OKO_COLLAPSE").unwrap_or_default().parse::<i32>() {
         ui.invoke_toggle_collapse(group);
     }
+    if let Ok(code) = std::env::var("OKO_FILTER").unwrap_or_default().parse::<i32>() {
+        ui.invoke_pick_filter(code);
+    }
+    if let Ok(text) = std::env::var("OKO_SEARCH") {
+        ui.invoke_search_edited(text.into());
+    }
 
     // The engine's events land here, on the UI thread.
+    // Three more aids need a finished run: the filter, the worst row's details
+    // and the copy button's toast. All are applied once, when the first run
+    // ends.
+    let filter_after = std::env::var("OKO_FILTER_AFTER")
+        .unwrap_or_default()
+        .parse::<i32>()
+        .ok();
+    let select_worst = std::env::var_os("OKO_SELECT_WORST").is_some();
+    let copy_after = std::env::var_os("OKO_COPY").is_some();
+    // A debug aid: press the copy button again and again once a run is over, so
+    // the toast stays on screen long enough to be photographed. It is the same
+    // button the inspector's icon presses.
+    let copy_every = std::env::var("OKO_COPY_EVERY")
+        .unwrap_or_default()
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.max(1));
+    let copy_timer = slint::Timer::default();
+    if let Some(seconds) = copy_every {
+        copy_timer.start(slint::TimerMode::Repeated, Duration::from_secs(seconds), {
+            let ui = ui.as_weak();
+            let app = app.clone();
+            move || {
+                let Some(window) = ui.upgrade() else { return };
+                let ready = {
+                    let state = app.borrow();
+                    state.selected.is_some() && !state.running
+                };
+                if ready {
+                    copy(&window, &mut app.borrow_mut());
+                }
+            }
+        });
+    }
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, TICK, {
         let ui = ui.as_weak();
@@ -567,6 +788,20 @@ pub fn run() -> ExitCode {
             while let Ok(event) = incoming.try_recv() {
                 let finished = matches!(event, Event::Finished(..));
                 handle(&ui, &mut app.borrow_mut(), event);
+                if finished {
+                    if let Some(code) = filter_after {
+                        ui.invoke_pick_filter(code);
+                    }
+                    if select_worst {
+                        let worst = app.borrow().order.first().copied();
+                        if let Some(index) = worst {
+                            ui.invoke_select(index as i32);
+                        }
+                    }
+                    if copy_after {
+                        ui.invoke_copy();
+                    }
+                }
                 if finished && std::env::var_os("OKO_EXPORT_DIR").is_some() {
                     ui.invoke_export();
                 }
@@ -590,8 +825,22 @@ pub fn run() -> ExitCode {
         start(&ui, &mut app.borrow_mut());
     }
 
+    // A debug aid: press the stop button after N seconds, so the stopped state
+    // can be checked without a mouse.
+    if let Ok(seconds) = std::env::var("OKO_STOP_AFTER").unwrap_or_default().parse::<u64>() {
+        let ui = ui.as_weak();
+        let app = app.clone();
+        slint::Timer::single_shot(Duration::from_secs(seconds), move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            stop(&mut state);
+            refresh(&window, &state);
+        });
+    }
+
     let result = ui.run();
     drop(timer);
+    drop(copy_timer);
     app.borrow_mut().persist();
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -628,7 +877,7 @@ fn refresh(ui: &AppWindow, app: &App) {
     inspector(ui, app, &strings);
     ui.set_running(app.running);
     ui.set_progress(app.progress);
-    ui.set_run_state(app.status.state(&strings).into());
+    ui.set_run_state(app.status.state(app, &strings).into());
     ui.set_run_sub(app.status.detail(app, &strings).into());
     ui.set_run_label(run_label(app, &strings).into());
     ui.set_adding(app.adding);
@@ -639,13 +888,58 @@ fn refresh(ui: &AppWindow, app: &App) {
     ui.set_lang(app.lang.code().into());
     ui.set_timeout_value(app.timeout as i32);
     ui.set_socks5_text(app.socks5.clone().into());
+    filter_bar(ui, app);
     dashboard(ui, app, &strings);
     status_bar(ui, app);
     toast(ui, app);
 }
 
+/// The filter chips, the counter beside them, and the row the arrows are on.
+fn filter_bar(ui: &AppWindow, app: &App) {
+    let mut counts = [0usize; 4];
+    for row in app.rows.iter().filter(|row| row.checked) {
+        counts[0] += 1;
+        match Filter::of(row.kind()) {
+            Some(Filter::Blocked) => counts[1] += 1,
+            Some(Filter::Ok) => counts[2] += 1,
+            Some(Filter::Unknown) => counts[3] += 1,
+            _ => {}
+        }
+    }
+    let visible = visible_rows(app);
+    ui.set_filter(app.filter.code());
+    ui.set_search_text(app.search.clone().into());
+    ui.set_ticked_count(counts[0] as i32);
+    ui.set_chip_all(counts[0].to_string().into());
+    ui.set_chip_blocked(counts[1].to_string().into());
+    ui.set_chip_ok(counts[2].to_string().into());
+    ui.set_chip_unknown(counts[3].to_string().into());
+    ui.set_shown_count(format!("{}/{}", visible.len(), counts[0]).into());
+    ui.set_selected_row(
+        app.selected
+            .and_then(|selected| visible.iter().position(|index| *index == selected))
+            .map(|at| at as i32)
+            .unwrap_or(-1),
+    );
+}
+
+/// The rows the table shows, in its order: the ticked ones the filter keeps.
+fn visible_rows(app: &App) -> Vec<usize> {
+    app.order
+        .iter()
+        .copied()
+        .filter(|index| {
+            app.rows
+                .get(*index)
+                .is_some_and(|row| row.checked && app.filter.keeps(row.kind()))
+        })
+        .collect()
+}
+
 /// The targets panel: a header per category, then the targets of that group.
+/// The search narrows the list, and a group with no match loses its header.
 fn list_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
+    let needle = app.search.trim().to_lowercase();
     let mut out = Vec::new();
     for (group, category) in Category::GROUPS.iter().enumerate() {
         let indices: Vec<usize> = app
@@ -653,6 +947,7 @@ fn list_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
             .iter()
             .enumerate()
             .filter(|(_, row)| row.target.category == *category)
+            .filter(|(_, row)| needle.is_empty() || row.target.domain.to_lowercase().contains(&needle))
             .map(|(index, _)| index)
             .collect();
         if indices.is_empty() {
@@ -676,6 +971,11 @@ fn list_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
             custom: false,
             count: format!("{ticked}/{}", indices.len()).into(),
             collapsed,
+            // Header-only fields: a group has no verdict of its own.
+            tip: "".into(),
+            hollow: false,
+            delta: 0,
+            prev: "".into(),
         });
         if collapsed {
             continue;
@@ -688,12 +988,12 @@ fn list_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
 }
 
 /// The table: the ticked targets in the order the last run left them, worst
-/// first. A target the run has not reached yet is dimmed.
+/// first, narrowed by the filter. A target the run has not reached yet is
+/// dimmed.
 fn table_model(app: &App, strings: &Strings) -> Vec<TargetRow> {
-    app.order
-        .iter()
-        .filter_map(|index| app.rows.get(*index).map(|row| (*index, row)))
-        .filter(|(_, row)| row.checked)
+    visible_rows(app)
+        .into_iter()
+        .filter_map(|index| app.rows.get(index).map(|row| (index, row)))
         .map(|(index, row)| row.view(index, strings, app.running && row.report.is_none()))
         .collect()
 }
@@ -714,13 +1014,13 @@ fn sort_order(app: &mut App) {
     app.order = order;
 }
 
-/// The button's label: the run's progress while it goes on.
+/// The button's label: the one button of the window turns into the stop while
+/// a run goes on.
 fn run_label(app: &App, strings: &Strings) -> String {
-    match &app.status {
-        Status::Checking { done, total } if app.running => {
-            format!("{} {done}/{total}", strings.checking)
-        }
-        _ => strings.check.to_string(),
+    if app.running {
+        strings.stop.to_string()
+    } else {
+        strings.check.to_string()
     }
 }
 
@@ -910,6 +1210,9 @@ fn apply_progress(app: &mut App, progress: Progress) {
 }
 
 /// A run finished: remember it, say how it went, and let the window work again.
+///
+/// A stopped run is not remembered: the history and the verdicts of the last
+/// full run stay as they were, so the delta always compares two complete runs.
 fn finish(app: &mut App, report: RunReport) {
     app.running = false;
     app.progress = 1.0;
@@ -918,10 +1221,16 @@ fn finish(app: &mut App, report: RunReport) {
         .take()
         .map(|started| started.elapsed().as_secs())
         .unwrap_or(0);
-    app.config.remember(summarize(&report, seconds));
-    app.persist();
+    let stopped = app.stopping;
+    app.stopping = false;
+    if !stopped {
+        app.config.remember(summarize(&report, seconds));
+        app.remember_prev();
+        app.persist();
+    }
     app.status = match &report.interrupted {
         Some(interrupted) => Status::Interrupted(interrupted.target.clone()),
+        None if stopped => Status::Stopped,
         None if app.control_dead => Status::ControlDead,
         None => Status::Done,
     };
@@ -976,6 +1285,7 @@ fn start(ui: &AppWindow, app: &mut App) {
     };
 
     for row in &mut app.rows {
+        row.prev = app.config.prev_of(&row.target.domain).map(str::to_string);
         row.report = None;
         row.tunnel = None;
         row.running = false;
@@ -986,6 +1296,8 @@ fn start(ui: &AppWindow, app: &mut App) {
     app.control_dead = false;
     app.running_rows = running_rows;
     app.running = true;
+    app.stopping = false;
+    app.cancel = run::Cancel::never();
     app.progress = 0.0;
     app.run_id += 1;
     app.started = Some(Instant::now());
@@ -998,8 +1310,82 @@ fn start(ui: &AppWindow, app: &mut App) {
         timeout: Duration::from_secs(app.timeout),
         socks5,
     };
-    spawn_run(app.run_id, targets, options, app.events.clone());
+    spawn_run(app.run_id, targets, options, app.cancel.clone(), app.events.clone());
     refresh(ui, app);
+}
+
+/// The stop button: the run stops asking after the target it is on. A probe in
+/// flight ends on its own timeout, and the targets it never reached stay
+/// unprobed.
+fn stop(app: &mut App) {
+    if !app.running {
+        return;
+    }
+    app.stopping = true;
+    app.cancel.cancel();
+}
+
+/// Move the choice up or down the visible rows, and open the details of the
+/// row it lands on.
+fn walk(app: &mut App, delta: i32) {
+    let visible = visible_rows(app);
+    if visible.is_empty() {
+        return;
+    }
+    let at = app
+        .selected
+        .and_then(|selected| visible.iter().position(|index| *index == selected));
+    let next = match at {
+        Some(at) => (at as i32 + delta).clamp(0, visible.len() as i32 - 1) as usize,
+        None if delta < 0 => visible.len() - 1,
+        None => 0,
+    };
+    app.selected = Some(visible[next]);
+}
+
+/// The inspector's copy button: the target's result as text, for a chat or a
+/// bug report. The ladder is written in words, not in glyphs.
+fn copy(ui: &AppWindow, app: &mut App) {
+    let strings = app.strings();
+    let Some(row) = app.selected.and_then(|index| app.rows.get(index)) else {
+        return;
+    };
+    let text = result_text(row, &strings);
+    let message = match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+        Ok(()) => format!("{} — {}", row.target.domain, strings.copied),
+        Err(err) => format!("{}: {err}", strings.copy_failed),
+    };
+    app.toast = Some((message, Instant::now() + TOAST));
+    refresh(ui, app);
+}
+
+/// One target's result as plain text: the domain, the verdict with its
+/// meaning, the ladder of the probes, and the facts behind them.
+fn result_text(row: &Row, strings: &Strings) -> String {
+    let mut out = String::new();
+    out.push_str(&row.target.domain);
+    out.push('\n');
+    let kind = row.kind();
+    if kind.is_empty() {
+        out.push_str(strings.why_not_probed);
+    } else {
+        out.push_str(&format!("{} — {}", badge(kind, strings), why(kind, strings)));
+    }
+    out.push('\n');
+    for step in steps_for(row, strings) {
+        out.push_str(&format!("{}  {}  {}\n", step.name, step.result, step.note));
+    }
+    if let Some(report) = &row.report {
+        if !report.verdict.facts.is_empty() {
+            out.push('\n');
+            out.push_str(strings.facts_label);
+            out.push('\n');
+            for fact in &report.verdict.facts {
+                out.push_str(&format!("· {fact}\n"));
+            }
+        }
+    }
+    out
 }
 
 /// An empty field means no tunnel; anything else has to be an address.
@@ -1175,6 +1561,17 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
         }
     });
 
+    ui.on_close_details({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            state.selected = None;
+            refresh(&window, &state);
+        }
+    });
+
     ui.on_remove({
         let ui = ui.as_weak();
         let app = app.clone();
@@ -1268,6 +1665,62 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
         move || {
             let Some(window) = ui.upgrade() else { return };
             start(&window, &mut app.borrow_mut());
+        }
+    });
+
+    // The chips, the stats and the wall all ask for the same filter; a second
+    // click on the one that is on turns it off.
+    ui.on_pick_filter({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move |code| {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            let filter = Filter::from_code(code);
+            state.filter = if state.filter == filter { Filter::All } else { filter };
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_search_edited({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move |text| {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            state.search = text.to_string();
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_walk({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move |delta| {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            walk(&mut state, delta);
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_stop({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            stop(&mut state);
+            refresh(&window, &state);
+        }
+    });
+
+    ui.on_copy({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            copy(&window, &mut app.borrow_mut());
         }
     });
 
@@ -1460,6 +1913,21 @@ mod tests {
         match kind {
             DiffKind::BothOk => VerdictKind::Ok,
             _ => VerdictKind::DpiSni,
+        }
+    }
+
+    fn run_report(targets: Vec<TargetReport>) -> RunReport {
+        RunReport {
+            tool: "oko",
+            version: "test",
+            generated_at: "2026-11-14T17:24:45Z".to_string(),
+            targets,
+            control: ControlReport {
+                target: target::control(),
+                tcp: Vec::new(),
+            },
+            tunnel: None,
+            interrupted: None,
         }
     }
 
@@ -1656,5 +2124,175 @@ mod tests {
             .expect("a row follows the header");
         assert_eq!(after.domain, "example.org");
         assert!(after.custom);
+    }
+
+    #[test]
+    fn a_full_run_remembers_the_verdict_of_every_target() {
+        let (events, _incoming) = mpsc::channel();
+        let mut app = App::new(Config::default(), events);
+        app.running = true;
+        app.rows[0].report = Some(report(VerdictKind::Ok, None));
+        app.rows[1].report = Some(report(VerdictKind::DpiSni, None));
+        finish(&mut app, run_report(vec![report(VerdictKind::Ok, None)]));
+        assert_eq!(app.config.history.len(), 1, "the run is in the history");
+        assert_eq!(app.config.prev.len(), 2, "both probed targets are remembered");
+        assert_eq!(app.config.prev[0].domain, app.rows[0].target.domain);
+        assert_eq!(app.config.prev[0].verdict, "ok");
+        assert_eq!(app.config.prev[1].verdict, "dpi_sni");
+        assert!(matches!(app.status, Status::Done));
+    }
+
+    #[test]
+    fn a_stopped_run_leaves_the_history_and_the_verdicts_alone() {
+        let (events, _incoming) = mpsc::channel();
+        let mut app = App::new(Config::default(), events);
+        app.running = true;
+        app.rows[0].report = Some(report(VerdictKind::Ok, None));
+        stop(&mut app);
+        assert!(app.stopping, "the stop button asks the run to end");
+        assert!(app.cancel.is_cancelled(), "and the engine sees it");
+        finish(&mut app, run_report(vec![report(VerdictKind::Ok, None)]));
+        assert!(app.config.history.is_empty(), "a stopped run is not a run");
+        assert!(app.config.prev.is_empty(), "and it remembers nothing");
+        assert!(matches!(app.status, Status::Stopped));
+        assert!(!app.stopping, "the next run starts clean");
+    }
+
+    #[test]
+    fn the_stop_button_does_nothing_when_no_run_goes_on() {
+        let (events, _incoming) = mpsc::channel();
+        let mut app = App::new(Config::default(), events);
+        stop(&mut app);
+        assert!(!app.stopping);
+        assert!(!app.cancel.is_cancelled());
+    }
+
+    #[test]
+    fn the_filter_keeps_one_bucket_of_the_ticked_targets() {
+        let (events, _incoming) = mpsc::channel();
+        let mut app = App::new(Config::default(), events);
+        app.rows[0].report = Some(report(VerdictKind::Ok, None));
+        app.rows[1].report = Some(report(VerdictKind::DpiSni, None));
+        app.rows[2].report = Some(report(VerdictKind::Unknown, None));
+        app.rows[3].report = Some(report(VerdictKind::GeoBlockByService, None));
+
+        app.filter = Filter::Blocked;
+        assert_eq!(visible_rows(&app), vec![1, 3], "the provider and the service");
+        app.filter = Filter::Ok;
+        assert_eq!(visible_rows(&app), vec![0]);
+        app.filter = Filter::Unknown;
+        assert_eq!(visible_rows(&app), vec![2]);
+        app.filter = Filter::All;
+        assert_eq!(visible_rows(&app).len(), app.rows.len(), "everything is ticked");
+    }
+
+    #[test]
+    fn an_unprobed_target_is_in_no_bucket() {
+        assert_eq!(Filter::of(""), None);
+        assert_eq!(Filter::of("ok"), Some(Filter::Ok));
+        assert_eq!(Filter::of("both_ok"), Some(Filter::Ok));
+        assert_eq!(Filter::of("unknown"), Some(Filter::Unknown));
+        assert_eq!(Filter::of("service_block"), Some(Filter::Blocked));
+        assert_eq!(Filter::of("dpi_sni"), Some(Filter::Blocked));
+        assert!(Filter::All.keeps(""));
+        assert!(!Filter::Ok.keeps(""));
+    }
+
+    #[test]
+    fn the_search_hides_the_groups_without_a_match() {
+        let (events, _incoming) = mpsc::channel();
+        let mut app = App::new(Config::default(), events);
+        let strings = Strings::new(Lang::En);
+        app.search = "YouTube".to_string();
+        let rows = list_model(&app, &strings);
+        assert_eq!(rows.iter().filter(|row| row.header).count(), 1, "one group is left");
+        assert!(
+            rows.iter()
+                .filter(|row| !row.header)
+                .all(|row| row.domain == "youtube.com"),
+            "and only the target that matched"
+        );
+        app.search = "nothing-like-this".to_string();
+        assert!(list_model(&app, &strings).is_empty(), "no match, no list");
+    }
+
+    #[test]
+    fn the_delta_points_up_when_the_verdict_improved() {
+        let strings = Strings::new(Lang::En);
+        let mut row = Row::new(target::ad_hoc("example.org"), true);
+        row.prev = Some("dpi_sni".to_string());
+        row.report = Some(report(VerdictKind::Ok, None));
+        let view = row.view(0, &strings, false);
+        assert_eq!(view.delta, 1, "the provider's cut became a clean target");
+        assert!(view.tip.contains("last run"), "the tooltip says what it was");
+
+        row.prev = Some("ok".to_string());
+        row.report = Some(report(VerdictKind::DpiSni, None));
+        assert_eq!(row.view(0, &strings, false).delta, 2, "and down when it got worse");
+
+        // A definite answer beats an uncertain one, and the service's own
+        // refusal beats the provider's cut.
+        row.prev = Some("unknown".to_string());
+        row.report = Some(report(VerdictKind::GeoBlockByService, None));
+        assert_eq!(
+            row.view(0, &strings, false).delta,
+            2,
+            "the ladder puts the uncertainty above the service's refusal"
+        );
+        row.prev = Some("dpi_sni".to_string());
+        assert_eq!(
+            row.view(0, &strings, false).delta,
+            1,
+            "the service is the better answer"
+        );
+
+        row.prev = Some("ok".to_string());
+        row.report = Some(report(VerdictKind::Ok, None));
+        assert_eq!(row.view(0, &strings, false).delta, 0, "no move, no triangle");
+    }
+
+    #[test]
+    fn the_service_itself_draws_a_hollow_badge() {
+        let strings = Strings::new(Lang::En);
+        let mut row = Row::new(target::ad_hoc("example.org"), true);
+        row.report = Some(report(VerdictKind::GeoBlockByService, None));
+        assert!(row.view(0, &strings, false).hollow);
+        row.report = Some(report(VerdictKind::DpiSni, None));
+        assert!(!row.view(0, &strings, false).hollow);
+    }
+
+    #[test]
+    fn the_arrows_walk_the_visible_rows() {
+        let (events, _incoming) = mpsc::channel();
+        let mut app = App::new(Config::default(), events);
+        app.rows[0].report = Some(report(VerdictKind::Ok, None));
+        app.rows[1].report = Some(report(VerdictKind::DpiSni, None));
+        app.filter = Filter::Blocked;
+        walk(&mut app, 1);
+        assert_eq!(app.selected, Some(1), "the first visible row");
+        walk(&mut app, 1);
+        assert_eq!(app.selected, Some(1), "the last one holds");
+        walk(&mut app, -1);
+        assert_eq!(app.selected, Some(1), "and the first one holds going up");
+        app.filter = Filter::All;
+        walk(&mut app, -1);
+        assert_eq!(app.selected, Some(0));
+    }
+
+    #[test]
+    fn the_copy_text_carries_the_domain_the_verdict_the_ladder_and_the_facts() {
+        let strings = Strings::new(Lang::Ru);
+        let mut row = Row::new(target::ad_hoc("example.org"), true);
+        let mut target_report = report(VerdictKind::DpiSni, None);
+        target_report.verdict.facts = vec!["SNI: youtube.com".to_string()];
+        row.report = Some(target_report);
+        let text = result_text(&row, &strings);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "example.org");
+        assert!(lines[1].starts_with(strings.badge_provider), "the verdict word");
+        assert!(lines[1].contains(strings.why_dpi_sni), "and what it means");
+        assert_eq!(lines.len(), 2 + 7 + 1 + 1 + 1, "the ladder, the facts, the fact");
+        assert!(text.contains(strings.step_dns), "the ladder is there");
+        assert!(text.contains("SNI: youtube.com"), "and the facts");
     }
 }

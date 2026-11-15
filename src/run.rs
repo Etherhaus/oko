@@ -12,6 +12,8 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::probes::dns::IpSource;
@@ -44,6 +46,32 @@ pub struct Options {
     pub timeout: Duration,
     /// The SOCKS5 proxy to repeat the probes through, when one was asked for.
     pub socks5: Option<SocketAddr>,
+}
+
+/// A run's stop button, seen from the engine.
+///
+/// The window flips the flag; the run looks at it between targets and before
+/// the tunnel pass. A probe that is already in flight is never cut: it ends on
+/// its own timeout, and the target it was working on stays unprobed. That is
+/// the soft stop the mockup asks for — the run stops asking, not mid-answer.
+#[derive(Debug, Clone, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    /// A token nobody will ever flip: the CLI's runs always go to the end.
+    pub fn never() -> Cancel {
+        Cancel::default()
+    }
+
+    /// Ask the run to stop after the target it is working on.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the stop was asked for.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// What the run reports while it goes.
@@ -112,10 +140,18 @@ impl Partial {
 
 /// Probe every target, then repeat the probes through the proxy when one was
 /// asked for, and compare the two paths.
-pub async fn run(targets: Vec<Target>, options: Options, mut progress: impl FnMut(Progress)) -> RunReport {
+///
+/// `cancel` is the window's stop button: when it is flipped, the run stops
+/// asking after the target it is working on and reports what it has.
+pub async fn run(
+    targets: Vec<Target>,
+    options: Options,
+    cancel: Cancel,
+    mut progress: impl FnMut(Progress),
+) -> RunReport {
     let budget = watchdog_budget(&targets, options);
     let state = Rc::new(RefCell::new(Partial::default()));
-    let inner = run_inner(&targets, options, &mut progress, &state);
+    let inner = run_inner(&targets, options, &cancel, &mut progress, &state);
     guarded(budget, inner, &state).await
 }
 
@@ -134,6 +170,7 @@ where
 async fn run_inner(
     targets: &[Target],
     options: Options,
+    cancel: &Cancel,
     progress: &mut impl FnMut(Progress),
     state: &RefCell<Partial>,
 ) -> RunReport {
@@ -152,6 +189,9 @@ async fn run_inner(
     // services.
     let mut dns_results = Vec::with_capacity(targets.len());
     for target in targets {
+        if cancel.is_cancelled() {
+            break;
+        }
         dns_results.push(dns::probe(&target.domain, options.timeout).await);
     }
     let system_pool: Vec<(String, Vec<IpAddr>)> = dns_results
@@ -163,6 +203,9 @@ async fn run_inner(
     // the link and would make the timings meaningless.
     let mut reports = Vec::with_capacity(targets.len());
     for (index, (target, dns)) in targets.iter().zip(dns_results).enumerate() {
+        if cancel.is_cancelled() {
+            break;
+        }
         state.borrow_mut().current = Some(target.domain.clone());
         progress(Progress::Started { index });
         let report = probe_target(
@@ -184,13 +227,15 @@ async fn run_inner(
     }
 
     // The tunnel run repeats the probes through the proxy and the diff says
-    // what the two paths mean together.
+    // what the two paths mean together. A stopped run does not start it: half
+    // a comparison would read as a verdict.
     let tunnel = match options.socks5 {
-        Some(proxy) => {
+        Some(proxy) if !cancel.is_cancelled() => {
             let tunnel = run_tunnel(targets, &reports, &control, proxy, options.timeout, progress).await;
             state.borrow_mut().tunnel = Some(tunnel.clone());
             Some(tunnel)
         }
+        Some(_) => None,
         None => None,
     };
     if let Some(tunnel) = &tunnel {
@@ -443,6 +488,16 @@ mod tests {
         let interrupted = report.interrupted.expect("the watchdog says so");
         assert_eq!(interrupted.target, "youtube.com");
         assert_eq!(interrupted.budget_secs, 0, "20 ms rounds down to zero seconds");
+    }
+
+    #[test]
+    fn the_stop_button_flips_the_token_the_run_reads() {
+        let cancel = Cancel::never();
+        assert!(!cancel.is_cancelled(), "a fresh run goes to the end");
+        // The window keeps one handle, the run thread the other.
+        let window = cancel.clone();
+        window.cancel();
+        assert!(cancel.is_cancelled(), "the run sees the window's flip");
     }
 
     #[test]
