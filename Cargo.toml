@@ -2,7 +2,7 @@
 name = "oko-detector"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 description = "A cross-platform detector for DNS, DPI and IP-level blocking of online services"
 license = "MIT"
 repository = "https://github.com/etherhaus/oko"

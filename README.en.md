@@ -158,7 +158,7 @@ install -Dm644 assets/oko-256.png \
 cargo build --release      # the binary lands in target/release/oko
 ```
 
-Rust 1.85 or newer. The window is [Slint](https://slint.dev); on Linux the build needs
+Rust 1.87 or newer. The window is [Slint](https://slint.dev); on Linux the build needs
 `libfontconfig1-dev`.
 
 ## Verifying a download

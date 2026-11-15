@@ -157,7 +157,7 @@ install -Dm644 assets/oko-256.png \
 cargo build --release      # бинарник в target/release/oko
 ```
 
-Нужен Rust 1.85 или новее. Окно — [Slint](https://slint.dev); на Linux для сборки нужен
+Нужен Rust 1.87 или новее. Окно — [Slint](https://slint.dev); на Linux для сборки нужен
 `libfontconfig1-dev`.
 
 ## Проверка загрузки
