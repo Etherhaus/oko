@@ -23,6 +23,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+ROOT=$PWD
 
 BIN=${1:?usage: package.sh <binary> <arch> <outdir>}
 ARCH=${2:?usage: package.sh <binary> <arch> <outdir>}
@@ -36,10 +37,16 @@ VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 [ -n "$VERSION" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
 
 case "$ARCH" in
-    x86_64)  DEBARCH=amd64 ; RPMARCH=x86_64  ; ARCHARCH=x86_64  ;;
-    aarch64) DEBARCH=arm64 ; RPMARCH=aarch64 ; ARCHARCH=aarch64 ;;
+    x86_64)  DEBARCH=amd64 ; RPMARCH=x86_64  ; ARCHARCH=x86_64  ; ELF=x86-64      ;;
+    aarch64) DEBARCH=arm64 ; RPMARCH=aarch64 ; ARCHARCH=aarch64 ; ELF='ARM aarch64' ;;
     *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
+
+# The binary has to be the architecture it is being packed as. Without this a
+# wrong artifact packs cleanly and fails on the user's machine, which is the
+# worst place to find out.
+file "$BIN" | grep -q "$ELF" \
+    || { echo "$BIN is not an $ARCH binary" >&2; exit 1; }
 
 # The binary must agree with Cargo.toml, or the updater offers this release to
 # itself forever. Only checkable when the binary can run here: an aarch64 build
@@ -132,17 +139,22 @@ say "Packed $DEB"
 # _sourcedir, so there is no %prep and no source archive to fetch.
 if command -v rpmbuild >/dev/null; then
     RPMTOP="$WORK/rpm"
-    mkdir -p "$RPMTOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+    mkdir -p "$RPMTOP"/{BUILD,RPMS,SOURCES,SPECS,SRPMS,db}
     install -m755 "$BIN" "$RPMTOP/SOURCES/oko"
     install -m644 LICENSE "$RPMTOP/SOURCES/LICENSE"
     cat > "$RPMTOP/SPECS/oko.spec" <<EOF
+# The binary arrives already stripped by the release profile, and the host
+# strip cannot read a foreign architecture anyway: leave it alone.
+%global debug_package %{nil}
+%global __strip /bin/true
+%global __objdump /bin/true
+
 Name:           oko
 Version:        $VERSION
 Release:        1
 Summary:        Blocking detector: measures, does not bypass
 License:        MIT
 URL:            https://github.com/etherhaus/oko
-BuildArch:      $RPMARCH
 Requires:       fontconfig freetype libpng brotli bzip2-libs expat zlib xkbcommon
 Requires:       wayland-libs-client mesa-libEGL mesa-libGL libX11 libXcursor
 
@@ -156,14 +168,14 @@ It measures. It does not bypass.
 
 %install
 install -Dm755 %{_sourcedir}/oko %{buildroot}%{_bindir}/oko
-install -Dm644 packaging/io.github.etherhaus.Oko.desktop %{buildroot}%{_datadir}/applications/io.github.etherhaus.Oko.desktop
-install -Dm644 packaging/io.github.etherhaus.Oko.metainfo.xml %{buildroot}%{_datadir}/metainfo/io.github.etherhaus.Oko.metainfo.xml
+install -Dm644 $ROOT/packaging/io.github.etherhaus.Oko.desktop %{buildroot}%{_datadir}/applications/io.github.etherhaus.Oko.desktop
+install -Dm644 $ROOT/packaging/io.github.etherhaus.Oko.metainfo.xml %{buildroot}%{_datadir}/metainfo/io.github.etherhaus.Oko.metainfo.xml
 for size in 16 32 48 64 128 256; do
-    install -Dm644 assets/oko-\$size.png %{buildroot}%{_datadir}/icons/hicolor/\${size}x\${size}/apps/io.github.etherhaus.Oko.png
+    install -Dm644 $ROOT/assets/oko-\$size.png %{buildroot}%{_datadir}/icons/hicolor/\${size}x\${size}/apps/io.github.etherhaus.Oko.png
 done
-install -Dm644 assets/oko.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.etherhaus.Oko.svg
-install -Dm644 README.md %{buildroot}%{_docdir}/oko/README.md
-install -Dm644 README.en.md %{buildroot}%{_docdir}/oko/README.en.md
+install -Dm644 $ROOT/assets/oko.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.etherhaus.Oko.svg
+install -Dm644 $ROOT/README.md %{buildroot}%{_docdir}/oko/README.md
+install -Dm644 $ROOT/README.en.md %{buildroot}%{_docdir}/oko/README.en.md
 install -Dm644 %{_sourcedir}/LICENSE %{buildroot}%{_docdir}/oko/LICENSE
 
 %files
@@ -175,11 +187,15 @@ install -Dm644 %{_sourcedir}/LICENSE %{buildroot}%{_docdir}/oko/LICENSE
 %{_docdir}/oko/README.en.md
 %{_docdir}/oko/LICENSE
 EOF
-    rpmbuild -bb --quiet \
+    # --target, not BuildArch: BuildArch makes rpmbuild check the host and
+    # refuse an aarch64 package on an x86_64 machine, while --target just
+    # says what the payload is.
+    rpmbuild -bb --quiet --target "$RPMARCH-linux" \
         --define "_topdir $RPMTOP" \
         --define "_sourcedir $RPMTOP/SOURCES" \
         --define "_builddir $RPMTOP/BUILD" \
         --define "_rpmdir $RPMTOP/RPMS" \
+        --define "_dbpath $RPMTOP/db" \
         --define "_build_name_fmt %%{NAME}-%%{VERSION}-%%{RELEASE}.%%{ARCH}.rpm" \
         "$RPMTOP/SPECS/oko.spec" >/dev/null
     RPM=$(find "$RPMTOP/RPMS" -name '*.rpm' | head -1)
