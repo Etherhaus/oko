@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
-# Cut a release: build, pack the assets the updater expects, sign them, and
-# open a draft on GitHub.
-#
-# The contract this script has to keep is the one in src/update.rs:
-#
-#   tag     vX.Y.Z, the same X.Y.Z as Cargo.toml
-#   assets  oko-<version>-<os>-<arch>.tar.gz
-#           oko-<version>-<os>-<arch>.tar.gz.minisig
-#   inside  oko-<version>-<os>-<arch>/oko
-#
-# The signature is made here, on this machine, with the key named by
-# OKO_MINISIGN_KEY. The key is never in the repository and never in CI: a
-# release that cannot be signed is not a release.
+# Cut a release: build both architectures, pack the four shapes each one
+# carries, sign every file, and open a draft on GitHub.
 #
 #   scripts/release.sh --dry-run     build, pack and sign; do not touch GitHub
 #   scripts/release.sh               the same, then `gh release create --draft`
+#
+# The x86_64 binary is built here. The aarch64 one is taken from the CI run for
+# this commit: there is no cross toolchain on the release machine, and a binary
+# built elsewhere is still a binary this machine signs.
+#
+# The signature is made here, with the key named by OKO_MINISIGN_KEY. The key
+# is never in the repository and never in CI: a release that cannot be signed
+# is not a release.
 #
 # The draft is not published by this script. Publishing is a separate, explicit
 # step: `gh release edit vX.Y.Z --draft=false`.
@@ -24,12 +21,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DRY_RUN=0
-for arg in "$@"; do
-    case "$arg" in
+ARM_BINARY=""
+while [ $# -gt 0 ]; do
+    case "$1" in
         --dry-run) DRY_RUN=1 ;;
-        -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "unknown argument: $arg" >&2; exit 2 ;;
+        --arm-binary) ARM_BINARY=${2:?--arm-binary needs a path}; shift ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
+    shift
 done
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -43,23 +43,7 @@ VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 [ -n "$VERSION" ] || die "no version in Cargo.toml"
 TAG="v$VERSION"
 
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-case "$OS" in
-    linux) OS=linux ;;
-    darwin) OS=macos ;;
-    *) die "unsupported system: $OS" ;;
-esac
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64|amd64) ARCH=x86_64 ;;
-    aarch64|arm64) ARCH=aarch64 ;;
-    *) die "unsupported architecture: $ARCH" ;;
-esac
-
-NAME="oko-$VERSION-$OS-$ARCH"
-TARBALL="$NAME.tar.gz"
-
-say "Oko $VERSION — $TAG, $OS/$ARCH"
+say "Oko $VERSION — $TAG"
 
 # ── the key ──────────────────────────────────────────────────────────────────
 # The public half in keys/ must be the one the private half belongs to, or the
@@ -70,64 +54,96 @@ if [ "$DRY_RUN" -eq 0 ]; then
     [ -f "$OKO_MINISIGN_KEY" ] || die "OKO_MINISIGN_KEY does not name a file: $OKO_MINISIGN_KEY"
 fi
 
-# ── the build ────────────────────────────────────────────────────────────────
-say "Building"
-cargo build --release --locked
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+DIST=dist
+rm -rf "$DIST"
+mkdir -p "$DIST"
 
-BIN=target/release/oko
-[ -x "$BIN" ] || die "the build produced no $BIN"
+# ── the x86_64 binary ────────────────────────────────────────────────────────
+say "Building x86_64"
+cargo build --release --locked
+X86=target/release/oko
+[ -x "$X86" ] || die "the build produced no $X86"
 
 # The binary must agree with the version in Cargo.toml, or the updater will
 # offer this release to itself forever.
-BUILT=$("$BIN" --version | awk '{print $2}')
+BUILT=$("$X86" --version | awk '{print $2}')
 [ "$BUILT" = "$VERSION" ] || die "the binary says $BUILT, Cargo.toml says $VERSION"
 
-# ── the assets ───────────────────────────────────────────────────────────────
-DIST=dist
-rm -rf "$DIST/$NAME"
-mkdir -p "$DIST/$NAME"
-install -m755 "$BIN" "$DIST/$NAME/oko"
-install -m644 README.md README.en.md LICENSE "$DIST/$NAME/"
-# The desktop entry and the icons travel with the binary: the archive is the
-# whole install kit, not just the file the updater swaps in.
-cp -r packaging assets "$DIST/$NAME/"
+# ── the aarch64 binary ───────────────────────────────────────────────────────
+# It comes from CI, and it must come from *this* commit: a release whose two
+# architectures were built from different trees is two releases wearing one tag.
+if [ -n "$ARM_BINARY" ]; then
+    [ -f "$ARM_BINARY" ] || die "no such file: $ARM_BINARY"
+    ARM=$ARM_BINARY
+    say "aarch64 binary taken from $ARM_BINARY"
+else
+    command -v gh >/dev/null || die "gh is not installed: the aarch64 binary comes from CI"
+    REPO=$(git remote get-url origin | sed -E 's#(git@|https://)github\.com[:/]##; s#\.git$##')
+    SHA=$(git rev-parse HEAD)
+    say "Fetching the aarch64 binary from CI for $SHA"
+    RUN=$(gh run list --repo "$REPO" --commit "$SHA" --workflow ci.yml --limit 1 \
+        --json databaseId,conclusion --jq '.[0].databaseId // empty')
+    [ -n "$RUN" ] || die "no CI run for $SHA: push the commit and let build-arm finish"
+    CONCLUSION=$(gh run view "$RUN" --repo "$REPO" --json conclusion --jq '.conclusion')
+    [ "$CONCLUSION" = "success" ] || die "the CI run for $SHA is $CONCLUSION, not success"
+    gh run download "$RUN" --repo "$REPO" --name oko-linux-aarch64 --dir "$WORK/arm"
+    ARM="$WORK/arm/oko"
+    [ -f "$ARM" ] || die "the CI run carried no oko binary"
+fi
 
-# Deterministic archive: the same tree gives the same bytes, so a rebuild can be
-# compared with what was published.
-tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' \
-    -C "$DIST" -czf "$DIST/$TARBALL" "$NAME"
+# A wrong-architecture binary would pack cleanly and fail on the user's machine.
+file "$ARM" | grep -q 'ARM aarch64' || die "$ARM is not an aarch64 binary"
 
-say "Packed $DIST/$TARBALL ($(du -h "$DIST/$TARBALL" | cut -f1))"
+# ── the packages ─────────────────────────────────────────────────────────────
+say "Packing x86_64"
+./scripts/package.sh "$X86" x86_64 "$DIST"
+say "Packing aarch64"
+./scripts/package.sh "$ARM" aarch64 "$DIST"
 
-if [ "$DRY_RUN" -eq 1 ]; then
-    # A dry run still signs, when a key is at hand: the point of the run is to
-    # prove the whole path, and the signature is the part that matters most.
-    if [ -n "${OKO_MINISIGN_KEY:-}" ] && [ -f "${OKO_MINISIGN_KEY:-}" ]; then
-        minisign -S -s "$OKO_MINISIGN_KEY" -m "$DIST/$TARBALL" \
-            -t "oko $VERSION $OS $ARCH" >/dev/null
-        say "Signed $DIST/$TARBALL.minisig (dry run)"
-        if minisign -Vm "$DIST/$TARBALL" -p keys/minisign.pub >/dev/null 2>&1; then
-            say "The signature checks out against keys/minisign.pub"
-        else
-            say "Signed with a key that is not keys/minisign.pub — expected for a test key"
-        fi
-    else
-        say "No OKO_MINISIGN_KEY: the archive is unsigned (dry run)"
-    fi
+# Every format the release promises, named once. A release that quietly ships
+# three of four is worse than one that stops here.
+EXPECTED=(
+    "oko-$VERSION-linux-x86_64.tar.gz"
+    "oko_${VERSION}_amd64.deb"
+    "oko-$VERSION-1.x86_64.rpm"
+    "oko-$VERSION-1-x86_64.pkg.tar.zst"
+    "oko-$VERSION-linux-aarch64.tar.gz"
+    "oko_${VERSION}_arm64.deb"
+    "oko-$VERSION-1.aarch64.rpm"
+    "oko-$VERSION-1-aarch64.pkg.tar.zst"
+)
+for asset in "${EXPECTED[@]}"; do
+    [ -f "$DIST/$asset" ] || die "missing from the release: $asset"
+done
+say "All ${#EXPECTED[@]} assets are in $DIST"
+
+# ── the signatures ───────────────────────────────────────────────────────────
+if [ "$DRY_RUN" -eq 1 ] && { [ -z "${OKO_MINISIGN_KEY:-}" ] || [ ! -f "${OKO_MINISIGN_KEY:-}" ]; }; then
+    say "No OKO_MINISIGN_KEY: the assets are unsigned (dry run)"
     say "Dry run: GitHub was not touched"
     exit 0
 fi
 
-# ── the signature ────────────────────────────────────────────────────────────
 say "Signing"
-minisign -S -s "$OKO_MINISIGN_KEY" -m "$DIST/$TARBALL" -t "oko $VERSION $OS $ARCH" >/dev/null
-[ -f "$DIST/$TARBALL.minisig" ] || die "minisign wrote no signature"
+for asset in "${EXPECTED[@]}"; do
+    minisign -S -s "$OKO_MINISIGN_KEY" -m "$DIST/$asset" -t "oko $VERSION" >/dev/null
+    [ -f "$DIST/$asset.minisig" ] || die "minisign wrote no signature for $asset"
+done
 
 # Verify with the public key that is compiled into the binary. A signature that
 # does not check out here would not check out on the user's machine either.
-minisign -Vm "$DIST/$TARBALL" -p keys/minisign.pub >/dev/null \
-    || die "the signature does not verify against keys/minisign.pub"
-say "The signature verifies against keys/minisign.pub"
+for asset in "${EXPECTED[@]}"; do
+    minisign -Vm "$DIST/$asset" -p keys/minisign.pub >/dev/null \
+        || die "the signature on $asset does not verify against keys/minisign.pub"
+done
+say "All ${#EXPECTED[@]} signatures verify against keys/minisign.pub"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "Dry run: GitHub was not touched"
+    exit 0
+fi
 
 # ── the draft ────────────────────────────────────────────────────────────────
 command -v gh >/dev/null || die "gh is not installed: the draft needs it"
@@ -144,8 +160,16 @@ say "Opening a draft release"
 gh release create "$TAG" \
     --draft \
     --title "Oko $VERSION" \
-    --notes "Oko $VERSION. Assets are signed with minisign; the key is in README.md." \
-    "$DIST/$TARBALL" "$DIST/$TARBALL.minisig"
+    --notes "Oko $VERSION.
+
+Linux x86_64 and aarch64. Each architecture comes as a tarball (what the
+built-in updater takes), a .deb, an .rpm and an Arch .pkg.tar.zst.
+
+Every asset is signed with minisign; the key is in README.md. A binary
+installed by a package manager will not update itself — that is what the
+package manager is for." \
+    "$DIST"/*.tar.gz "$DIST"/*.deb "$DIST"/*.rpm "$DIST"/*.pkg.tar.zst \
+    "$DIST"/*.minisig
 
 say "Draft $TAG is on GitHub. Nothing is published yet:"
 say "  gh release edit $TAG --draft=false"

@@ -55,3 +55,36 @@ jobs:
       # ignoring the advisory outright, both of which hide more than they fix.
       - name: Check the dependencies against the advisory database
         run: cargo audit
+
+  # The aarch64 binary cannot be built on the release machine: there is no
+  # cross toolchain there, and Slint's winit backend wants a real sysroot with
+  # fontconfig in it. This job builds it on an ARM runner and hands it over as
+  # an artifact; release.sh downloads it and packs it beside the x86_64 one.
+  #
+  # Nothing here signs anything, for the same reason as everywhere else: the
+  # key lives on the release machine and never enters CI.
+  build-arm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          # The Slint renderer links against fontconfig.
+          sudo apt-get install -y libfontconfig1-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      # A binary that cannot even print its version is not worth shipping.
+      - name: Check the binary runs
+        run: ./target/release/oko --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oko-linux-aarch64
+          path: target/release/oko
+          if-no-files-found: error
