@@ -305,3 +305,36 @@
 - Живой проверки на Windows нет: ветка подмены покрыта только юнит-тестом.
 - Боевой ключ minisign — за Дмитрием на этапе 5; ротация ключа означает, что старые бинарники перестают обновляться (так задумано).
 - Сеть апдейтера (`api.github.com`, `objects.githubusercontent.com`) записана в `AGENTS.md` («Куда Oko ходит по сети») — этап 5 переносит список в README и SECURITY.md.
+
+---
+
+## 2026-11-15 — Этап 5 — упаковка и первый релиз
+
+**Одобрение:** бриф «Этап 5, единым срезом — упаковка и первый релиз». Три стопа пройдены в чате: боевой ключ («сгенерируй ты»), версия (`0.2.0`), публикация («да, публикуй»).
+
+**Сделано.**
+- `design/oko-icon.svg` — тёмная плитка из `design/oko_logos.svg` (по указанию Дмитрия «вырежи из oko_logos.svg»); `assets/oko-{16,32,48,64,128,256}.png` для hicolor. Иконка окна — 128 px, `_NET_WM_ICON` в окне проверен (16386 значений = 128×128), `WM_CLASS` = `io.github.etherhaus.Oko`.
+- `packaging/io.github.etherhaus.Oko.desktop` и `…metainfo.xml` — `desktop-file-validate` чисто, `appstreamcli validate --no-net` — «Проверка успешно пройдена».
+- «О программе» по мокапу: глаз, «Oko <версия>», слоган, автор, «создано при помощи Vibe CLI», адрес, репозиторий, MIT, подпись канала. Esc-цепочка: «О программе» → настройки → инспектор → поиск. Проверено глазами в четырёх вариантах (RU/EN × тёмная/светлая).
+- `README.md` (RU) и `README.en.md`: компаньон Ether, слоган, таблица вердиктов, методика со ссылками (белый SNI, l4-25 — blockcheck и net4people, QUIC по RFC 9000), ложные срабатывания, отличия от OONI и dpi-detector, `openssl s_client` с живым примером (172.217.20.174, youtube.com), установка, блок minisign, «Куда Oko ходит по сети», горячие клавиши, языки, безопасность, лицензия.
+- `SECURITY.md`: контакт `lehzenblad@proton.me`, «не обход», без рута, таблица сети, пятишаговый апдейтер с fail-closed и guard, ротация ключа, «CI не подписывает».
+- `.github/workflows/ci.yml` (fmt/clippy/test + audit, ubuntu-24.04, `libfontconfig1-dev`) и `.github/dependabot.yml` (cargo + actions, weekly, сгруппировано) — по образцу ether-ovpn.
+- `scripts/release.sh`: версия из `Cargo.toml` → тег, os/arch, `cargo build --release --locked`, сверка `oko --version`, детерминированный tar, подпись из `OKO_MINISIGN_KEY`, проверка против `keys/minisign.pub`, `gh release create --draft`; `--dry-run` не зовёт gh. Найдено на живом прогоне: gh отказывается прикреплять ассеты к тегу, которого нет на remote — добавлен `git push origin "$TAG"` перед созданием драфта.
+- Боевая пара minisign сгенерирована вне репо: публичная половина в `keys/minisign.pub` (`RWRKvw8XRG50X1BykfJ6a/7LOkq5M6av6BNd5yElOMX5SemX8ZNmuM+8`), приватная — `~/keys/oko-secret.key` (0600, вне репозитория). `.gitignore` дополнен `*.key` и `oko-secret*`; grep по фрагменту секрета по всему дереву — не найден.
+- Тестовый фикстур апдейтера переподписан боевым ключом (`SIGNED_SIGNATURE` в `src/update.rs`).
+- Версия `0.2.0` в `Cargo.toml` и `Cargo.lock`, запись `<releases>` в metainfo.
+- `AGENTS.md`: список сети приведён к трём DoH-эталонам и помечен как синхронизируемый с README/README.en/SECURITY.
+
+**Проверено.**
+- `cargo fmt --check` — чисто; `cargo clippy --offline --all-targets -- -D warnings` — чисто; `cargo test --offline` — 216 тестов, все зелёные.
+- Релиз `v0.2.0` опубликован: `oko-0.2.0-linux-x86_64.tar.gz` (11 458 814 Б) + `.minisig` (284 Б). Ассеты скачаны обратно через API: sha256 совпадает с локальным (`cdc9029b…`), `minisign -Vm` против `keys/minisign.pub` — «Signature and comment signature verified».
+- Боевой цикл против настоящего GitHub: бинарник 0.1.0 (собран с тем же боевым ключом) → «доступна — 0.2.0» → «Скачиваю… 23 %» → «подпись проверена — 0.2.0» → самозамена → перезапуск поднял `oko 0.2.0` (карточка «О программе» и статус-бар).
+- Демонстрация отказа: `OKO_UPDATE_URL` на локальный «релиз 0.5.0» с подменённым байтом в архиве → «не удалось: подпись не сходится — ничего не установлено», `~/.cache/oko` пуст, бинарник остался 0.1.0.
+- Скрины (RU, обе темы): `design/screenshots/stage5-{dark,light}.png` (прогон 24 целей) и `stage5-update-{uptodate,available,progress,verified,restarted,refused}-{dark,light}.png`.
+- Конфиг Дмитрия возвращён из `/tmp/oko-config-demo-backup.json` и сверен.
+
+**Не сделано / вопросы.**
+- В `design/mockup.html` секций «Обновление» и «О программе» нет — обе сделаны по тексту брифа.
+- Живой проверки на Windows нет: ветка подмены `.old` покрыта только юнит-тестом.
+- Приватный ключ оставлен в `~/keys/oko-secret.key`, а не удалён: без него следующий релиз не подписать, а ротация ключа отрезала бы 0.2.0 от обновлений. Парольной фразы на ключе нет (иначе подпись в скрипте была бы неинтерактивной только вручную) — при желании перенести в своё хранилище.
+- `gh` в системе не было — поставлен локально в `~/.local/bin/gh` (2.83.0), токен берётся из `/tmp/oko-gh-token` и в `.git/config` не попадает.

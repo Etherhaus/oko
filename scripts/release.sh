@@ -136,6 +136,9 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
     die "tag $TAG already exists"
 fi
 git tag -a "$TAG" -m "Oko $VERSION"
+# gh refuses to attach assets to a tag it cannot see on the remote, so the tag
+# goes up before the draft does.
+git push origin "$TAG"
 
 say "Opening a draft release"
 gh release create "$TAG" \
