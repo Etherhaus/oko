@@ -137,10 +137,29 @@ openssl s_client -connect 172.217.20.174:443 -servername yandex.ru </dev/null
 
 ## Установка
 
-Готовые сборки — в [последнем релизе](https://github.com/Etherhaus/oko/releases/latest),
-Linux x86_64.
+Готовые сборки — в [последнем релизе](https://github.com/Etherhaus/oko/releases/latest).
+Linux x86_64 и aarch64, по четыре формата на каждую архитектуру.
 
-**Архив** (`.tar.gz`, glibc 2.39+). Внутри бинарник `oko`, иконки и файлы для меню:
+**Debian, Ubuntu, Mint** (`.deb`):
+
+```bash
+sudo apt install ./oko_<версия>_amd64.deb      # arm64 на ARM
+```
+
+**Fedora, openSUSE, RHEL** (`.rpm`):
+
+```bash
+sudo dnf install ./oko-<версия>-1.x86_64.rpm   # aarch64 на ARM
+```
+
+**Arch, CachyOS, Manjaro** (`.pkg.tar.zst`):
+
+```bash
+sudo pacman -U oko-<версия>-1-x86_64.pkg.tar.zst
+```
+
+**Архив** (`.tar.gz`, glibc 2.39+) — ровно то, что скачивает встроенный апдейтер. Внутри
+бинарник `oko`, иконки и файлы для меню:
 
 ```bash
 tar xzf oko-<версия>-linux-x86_64.tar.gz
@@ -150,6 +169,10 @@ install -Dm644 packaging/io.github.etherhaus.Oko.desktop ~/.local/share/applicat
 install -Dm644 assets/oko-256.png \
   ~/.local/share/icons/hicolor/256x256/apps/io.github.etherhaus.Oko.png
 ```
+
+Пакет, поставленный пакетным менеджером, себя не обновляет: бинарник лежит в `/usr/bin`, а
+там самозамена запрещена, и Oko честно скажет «обновляй пакетным менеджером». Самообновление
+работает только для архива, распакованного в домашний каталог.
 
 **Из исходников:**
 

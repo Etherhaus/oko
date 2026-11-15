@@ -137,11 +137,29 @@ the second hands back a `*.google.com` chain — exactly what Oko called `dpi_sn
 
 ## Install
 
-Prebuilt packages are in the [latest release](https://github.com/Etherhaus/oko/releases/latest),
-Linux x86_64.
+Prebuilt packages are in the [latest release](https://github.com/Etherhaus/oko/releases/latest).
+Linux x86_64 and aarch64, four formats for each architecture.
 
-**Tarball** (`.tar.gz`, needs glibc 2.39+). It holds the `oko` binary, the icons and the menu
-entry:
+**Debian, Ubuntu, Mint** (`.deb`):
+
+```bash
+sudo apt install ./oko_<version>_amd64.deb      # arm64 on ARM
+```
+
+**Fedora, openSUSE, RHEL** (`.rpm`):
+
+```bash
+sudo dnf install ./oko-<version>-1.x86_64.rpm   # aarch64 on ARM
+```
+
+**Arch, CachyOS, Manjaro** (`.pkg.tar.zst`):
+
+```bash
+sudo pacman -U oko-<version>-1-x86_64.pkg.tar.zst
+```
+
+**Tarball** (`.tar.gz`, needs glibc 2.39+) — exactly what the built-in updater downloads. It
+holds the `oko` binary, the icons and the menu entry:
 
 ```bash
 tar xzf oko-<version>-linux-x86_64.tar.gz
@@ -151,6 +169,10 @@ install -Dm644 packaging/io.github.etherhaus.Oko.desktop ~/.local/share/applicat
 install -Dm644 assets/oko-256.png \
   ~/.local/share/icons/hicolor/256x256/apps/io.github.etherhaus.Oko.png
 ```
+
+A package installed by a package manager does not update itself: the binary sits in `/usr/bin`,
+where self-replacement is refused, and Oko says so plainly. Self-updating works only for the
+tarball unpacked into a home directory.
 
 **From source:**
 
