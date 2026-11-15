@@ -19,6 +19,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// How many runs the history keeps.
 pub const HISTORY_LIMIT: usize = 20;
 
+/// How long the updater waits between automatic checks, in seconds.
+pub const DAY: u64 = 24 * 60 * 60;
+
 /// The smallest and largest probe timeout the window allows, in seconds.
 pub const MIN_TIMEOUT: u64 = 1;
 pub const MAX_TIMEOUT: u64 = 120;
@@ -84,6 +87,18 @@ pub struct Config {
     /// runs, not a run and a half.
     #[serde(default)]
     pub prev: Vec<PrevVerdict>,
+    /// When the updater last asked GitHub, in seconds since the Unix epoch.
+    /// The window asks at most once a day, and this is the clock it reads.
+    #[serde(default)]
+    pub last_check: u64,
+    /// What that check found: `up-to-date`, `available`, `failed`, or empty
+    /// when the updater has never run.
+    #[serde(default)]
+    pub last_state: String,
+    /// The version that check found, when one was available. The dot on the
+    /// settings button is drawn from it, so it survives a restart.
+    #[serde(default)]
+    pub last_version: String,
 }
 
 fn default_version() -> u32 {
@@ -115,6 +130,9 @@ impl Default for Config {
             custom: Vec::new(),
             history: Vec::new(),
             prev: Vec::new(),
+            last_check: 0,
+            last_state: String::new(),
+            last_version: String::new(),
         }
     }
 }
@@ -201,6 +219,22 @@ impl Config {
     pub fn remember_verdicts(&mut self, verdicts: Vec<PrevVerdict>) {
         self.prev = verdicts;
     }
+
+    /// Whether the updater should ask GitHub on this start.
+    ///
+    /// Once a day, counted from the last attempt rather than the last success:
+    /// a machine that is offline for a week should not ask on every start.
+    pub fn check_due(&self, now: u64) -> bool {
+        now.saturating_sub(self.last_check) >= DAY
+    }
+
+    /// Record what a check found, so the next start knows when to ask again
+    /// and the settings section can say what the last answer was.
+    pub fn remember_check(&mut self, now: u64, state: &str, version: &str) {
+        self.last_check = now;
+        self.last_state = state.to_string();
+        self.last_version = version.to_string();
+    }
 }
 
 /// The config directory of this platform.
@@ -255,6 +289,34 @@ mod tests {
         assert!(config.custom.is_empty());
         assert!(config.history.is_empty());
         assert!(config.prev.is_empty(), "no run yet, nothing to compare");
+        assert_eq!(config.last_check, 0, "the updater has never asked");
+        assert!(config.last_state.is_empty());
+        assert!(config.last_version.is_empty());
+    }
+
+    #[test]
+    fn the_updater_asks_once_a_day() {
+        let mut config = Config::default();
+        assert!(config.check_due(1_000_000), "a fresh file has never asked");
+        config.remember_check(1_000_000, "up-to-date", "");
+        assert!(!config.check_due(1_000_000), "just asked");
+        assert!(!config.check_due(1_000_000 + DAY - 1), "a second short of a day");
+        assert!(config.check_due(1_000_000 + DAY), "a day later");
+        // A clock that went backwards does not make it ask again.
+        assert!(!config.check_due(999_000));
+    }
+
+    #[test]
+    fn a_check_is_remembered_with_what_it_found() {
+        let mut config = Config::default();
+        config.remember_check(1_700_000_000, "available", "0.5.0");
+        assert_eq!(config.last_check, 1_700_000_000);
+        assert_eq!(config.last_state, "available");
+        assert_eq!(config.last_version, "0.5.0");
+        // A later check replaces the answer instead of adding to it.
+        config.remember_check(1_700_100_000, "up-to-date", "");
+        assert_eq!(config.last_state, "up-to-date");
+        assert!(config.last_version.is_empty());
     }
 
     #[test]
@@ -274,6 +336,7 @@ mod tests {
             domain: "github.com".to_string(),
             verdict: "dpi_sni".to_string(),
         }]);
+        config.remember_check(1_700_000_000, "available", "0.5.0");
 
         let text = config.to_json();
         let back = Config::from_json(&text).expect("the file it wrote parses");

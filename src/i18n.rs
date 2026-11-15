@@ -363,6 +363,52 @@ labels! {
         "пробам не хватило данных — открой инспектор"
     ),
 
+    // The updater's section of the settings popover.
+    update, set_update => ("Update", "Обновление"),
+    update_check, set_update_check => ("Check", "Проверить"),
+    update_checking, set_update_checking => ("Checking…", "Проверяю…"),
+    update_download, set_update_download => ("Download", "Скачать"),
+    update_downloading, set_update_downloading => ("Downloading…", "Скачиваю…"),
+    update_restart, set_update_restart => ("Restart", "Перезапустить"),
+    update_idle, set_update_idle => ("not checked yet", "не проверялось"),
+    update_current, set_update_current => ("up to date", "актуальна"),
+    update_available, set_update_available => ("available", "доступна"),
+    update_verified, set_update_verified => ("signature checked", "подпись проверена"),
+    update_none, set_update_none => ("no updates", "обновлений нет"),
+    update_on_github, set_update_on_github => (
+        "on the GitHub releases",
+        "на GitHub-релизах"
+    ),
+    update_ready, set_update_ready => (
+        "downloaded and verified — restart",
+        "скачана и проверена — перезапусти"
+    ),
+    update_failed, set_update_failed => ("failed", "не удалось"),
+    update_failed_signature, set_update_failed_signature => (
+        "the signature does not match — nothing was installed",
+        "подпись не сходится — ничего не установлено"
+    ),
+    update_failed_network, set_update_failed_network => ("network", "сеть"),
+    update_failed_timeout, set_update_failed_timeout => (
+        "the download ran out of time",
+        "скачивание не уложилось в таймаут"
+    ),
+    update_failed_large, set_update_failed_large => (
+        "the download is larger than 200 MB",
+        "файл больше 200 МБ"
+    ),
+    update_failed_asset, set_update_failed_asset => ("the release has no", "в релизе нет файла"),
+    update_failed_archive, set_update_failed_archive => ("the archive does not read", "архив не читается"),
+    update_failed_install, set_update_failed_install => ("the install failed", "установка не удалась"),
+    update_signature_hint, set_update_signature_hint => (
+        "the minisign signature is checked before anything is installed",
+        "подпись minisign проверяется до установки"
+    ),
+    update_managed, set_update_managed => (
+        "this binary belongs to the package manager: update it there",
+        "этот бинарник ставит пакетный менеджер: обновляй через него"
+    ),
+
     // The keyboard hints of the status bar.
     key_search, set_key_search => ("search", "поиск"),
     key_run, set_key_run => ("run", "прогон"),

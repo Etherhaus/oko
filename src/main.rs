@@ -17,6 +17,7 @@ mod report;
 mod route;
 mod run;
 mod target;
+mod update;
 mod verdict;
 
 use std::net::SocketAddr;

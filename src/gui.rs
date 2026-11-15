@@ -10,6 +10,7 @@
 
 use std::cell::RefCell;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -28,6 +29,7 @@ use crate::probes::tls::TlsOutcome;
 use crate::report::{self, RunReport, TargetReport};
 use crate::run::{self, Options, Progress};
 use crate::target::{self, Category, Target};
+use crate::update;
 use crate::verdict::{DiffKind, Level};
 
 slint::include_modules!();
@@ -519,6 +521,15 @@ struct App {
     status: Status,
     progress: f32,
     control_dead: bool,
+    /// The updater's state, and the release it is working on.
+    update: Update,
+    update_release: Option<update::Release>,
+    /// The check was asked for by the button rather than by the start: only
+    /// then does its answer become a toast.
+    update_manual: bool,
+    /// The binary lives where a package manager owns it: it can be downloaded
+    /// and checked, but not replaced.
+    update_managed: bool,
     config: Config,
     events: mpsc::Sender<Event>,
 }
@@ -575,6 +586,10 @@ impl App {
             status: Status::Ready,
             progress: 0.0,
             control_dead: false,
+            update: Update::Idle,
+            update_release: None,
+            update_manual: false,
+            update_managed: false,
             config,
             events,
         }
@@ -633,11 +648,45 @@ impl App {
     }
 }
 
+/// What the updater is doing, as the settings section shows it.
+///
+/// The section is one line of status and one button, so the states are the
+/// button's own story: check, download, restart.
+#[derive(Debug, Clone, PartialEq)]
+enum Update {
+    /// Nothing asked yet in this session.
+    Idle,
+    /// A check is in flight.
+    Checking,
+    /// The newest release is not newer than this binary.
+    UpToDate,
+    /// A newer release is on GitHub.
+    Available(String),
+    /// The archive is coming down.
+    Downloading(f32),
+    /// Downloaded, verified, and in place: a restart picks it up. The path is
+    /// the one the install replaced, which is what the restart has to exec.
+    Ready { version: String, exe: PathBuf },
+    /// Something went wrong, in the updater's own words.
+    Failed(String),
+}
+
+/// What the updater thread tells the UI.
+enum UpdateEvent {
+    /// The check came back: the release, nothing new, or why it failed.
+    Checked(Result<Option<update::Release>, update::Error>),
+    /// The download is this far along.
+    Progress(f32),
+    /// The install ended: the path it replaced, or why it did not.
+    Installed(Result<PathBuf, update::Error>),
+}
+
 /// What the UI asks a run to do, and what the run tells the UI.
 enum Event {
     Progress(u64, Box<Progress>),
     Finished(u64, Box<RunReport>),
     Failed(u64, String),
+    Update(UpdateEvent),
 }
 
 /// Start one run on its own thread: its own tokio runtime, its own id.
@@ -656,6 +705,38 @@ fn spawn_run(id: u64, targets: Vec<Target>, options: Options, cancel: run::Cance
         }));
         let _ = events.send(Event::Finished(id, Box::new(report)));
     });
+}
+
+/// Ask GitHub for the newest release on its own thread: the window never
+/// waits for the network.
+fn spawn_check(events: mpsc::Sender<Event>) {
+    thread::spawn(move || {
+        let result = update::check().map(|check| match check {
+            update::Check::UpToDate => None,
+            update::Check::Available(release) => Some(release),
+        });
+        let _ = events.send(Event::Update(UpdateEvent::Checked(result)));
+    });
+}
+
+/// Download the release, check its signature, and put it in place on its own
+/// thread. The progress comes back as it goes.
+fn spawn_install(release: update::Release, events: mpsc::Sender<Event>) {
+    thread::spawn(move || {
+        let sender = events.clone();
+        let result = update::install(&release, &move |fraction| {
+            let _ = sender.send(Event::Update(UpdateEvent::Progress(fraction)));
+        });
+        let _ = events.send(Event::Update(UpdateEvent::Installed(result)));
+    });
+}
+
+/// Seconds since the Unix epoch: the updater's clock.
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// The desktop's "prefers reduced motion".
@@ -704,6 +785,20 @@ pub fn run() -> ExitCode {
 
     wire(&ui, &app);
 
+    // The updater: where this binary lives decides whether it may replace
+    // itself, and the file decides whether it is time to ask GitHub again.
+    {
+        let mut state = app.borrow_mut();
+        state.update_managed = std::env::current_exe()
+            .map(|exe| update::managed(&exe))
+            .unwrap_or(false);
+        if state.config.check_due(now_seconds()) {
+            state.update = Update::Checking;
+            spawn_check(state.events.clone());
+        }
+        refresh(&ui, &state);
+    }
+
     // Development aids: the window can be driven without a mouse, which is the
     // only way to check it where no input-injection tool exists. Each one calls
     // the callback the button calls, so the path is the same.
@@ -734,6 +829,12 @@ pub fn run() -> ExitCode {
     if std::env::var("OKO_SETTINGS").is_ok() {
         ui.invoke_open_settings();
     }
+    // A debug aid: press the updater's button once the window is up, so the
+    // manual check and its toast can be seen without a mouse. Pressing it here
+    // would spend the toast's three seconds before the first frame is drawn.
+    let mut check_at = std::env::var("OKO_UPDATE_CHECK")
+        .ok()
+        .map(|_| Instant::now() + Duration::from_millis(1500));
     if let Ok(group) = std::env::var("OKO_COLLAPSE").unwrap_or_default().parse::<i32>() {
         ui.invoke_toggle_collapse(group);
     }
@@ -779,6 +880,10 @@ pub fn run() -> ExitCode {
             }
         });
     }
+    // `OKO_UPDATE_AUTO=1` walks the whole chain; `=install` stops before the
+    // restart, so the verified state can be looked at.
+    let auto_update = std::env::var("OKO_UPDATE_AUTO").unwrap_or_default();
+    let auto_restart = auto_update != "install";
     let timer = slint::Timer::default();
     timer.start(slint::TimerMode::Repeated, TICK, {
         let ui = ui.as_weak();
@@ -804,6 +909,22 @@ pub fn run() -> ExitCode {
                 }
                 if finished && std::env::var_os("OKO_EXPORT_DIR").is_some() {
                     ui.invoke_export();
+                }
+            }
+            // A debug aid: walk the updater's whole chain without a mouse —
+            // check, download, restart — so the live path can be shown.
+            if !auto_update.is_empty() {
+                let ready = matches!(app.borrow().update, Update::Ready { .. });
+                let available = matches!(app.borrow().update, Update::Available(_));
+                if available || (ready && auto_restart) {
+                    ui.invoke_update_pressed();
+                }
+            }
+            // A debug aid: press the updater's button once the window is up.
+            if let Some(at) = check_at {
+                if Instant::now() >= at {
+                    check_at = None;
+                    ui.invoke_update_pressed();
                 }
             }
             // A toast goes away on its own; the timer is the only clock here.
@@ -891,6 +1012,11 @@ fn refresh(ui: &AppWindow, app: &App) {
     filter_bar(ui, app);
     dashboard(ui, app, &strings);
     status_bar(ui, app);
+    ui.set_update_status(update_status(app, &strings).into());
+    ui.set_update_action(update_action(app, &strings).into());
+    ui.set_update_busy(update_busy(app));
+    ui.set_update_dot(update_dot(app));
+    ui.set_update_hint(update_hint(app, &strings).into());
     toast(ui, app);
 }
 
@@ -1155,9 +1281,150 @@ fn handle(ui: &AppWindow, app: &mut App, event: Event) {
             app.running = false;
             app.status = Status::Failed(reason);
         }
+        Event::Update(event) => {
+            handle_update(ui, app, event);
+            return;
+        }
         _ => return,
     }
     refresh(ui, app);
+}
+
+/// The updater's events, on the UI thread.
+///
+/// A check the button asked for answers with a toast; the one the start asked
+/// for stays quiet, because a machine that is offline should not be told about
+/// it on every launch.
+fn handle_update(ui: &AppWindow, app: &mut App, event: UpdateEvent) {
+    let strings = app.strings();
+    match event {
+        UpdateEvent::Checked(result) => {
+            let manual = std::mem::take(&mut app.update_manual);
+            let now = now_seconds();
+            let message = match result {
+                Ok(Some(release)) => {
+                    app.config.remember_check(now, "available", &release.version);
+                    let message = format!("oko {} — {}", release.version, strings.update_on_github);
+                    app.update = Update::Available(release.version.clone());
+                    app.update_release = Some(release);
+                    message
+                }
+                Ok(None) => {
+                    app.config.remember_check(now, "up-to-date", "");
+                    app.update = Update::UpToDate;
+                    app.update_release = None;
+                    strings.update_none.to_string()
+                }
+                Err(err) => {
+                    app.config.remember_check(now, "failed", "");
+                    let why = update_error(&err, &strings);
+                    app.update = Update::Failed(why.clone());
+                    format!("{}: {why}", strings.update_failed)
+                }
+            };
+            app.persist();
+            if manual {
+                app.toast = Some((message, Instant::now() + TOAST));
+            }
+        }
+        UpdateEvent::Progress(fraction) => {
+            app.update = Update::Downloading(fraction);
+        }
+        UpdateEvent::Installed(result) => {
+            let message = match result {
+                Ok(exe) => {
+                    let version = app
+                        .update_release
+                        .as_ref()
+                        .map(|release| release.version.clone())
+                        .unwrap_or_default();
+                    app.update = Update::Ready { version, exe };
+                    strings.update_ready.to_string()
+                }
+                Err(err) => {
+                    let why = update_error(&err, &strings);
+                    app.update = Update::Failed(why.clone());
+                    format!("{}: {why}", strings.update_failed)
+                }
+            };
+            app.toast = Some((message, Instant::now() + TOAST));
+        }
+    }
+    refresh(ui, app);
+}
+
+/// Why the updater stopped, in the window's language.
+///
+/// The technical detail is kept where it names something the user can act on —
+/// a host, a file, an OS error — and dropped where it would only repeat the
+/// sentence: a signature that does not match needs no explanation.
+fn update_error(err: &update::Error, strings: &Strings) -> String {
+    match err {
+        update::Error::Signature(_) => strings.update_failed_signature.to_string(),
+        update::Error::TooLarge => strings.update_failed_large.to_string(),
+        update::Error::TimedOut => strings.update_failed_timeout.to_string(),
+        update::Error::NoAsset(name) => format!("{} {name}", strings.update_failed_asset),
+        update::Error::Managed(_) => strings.update_managed.to_string(),
+        update::Error::Network(detail) => format!("{}: {detail}", strings.update_failed_network),
+        update::Error::Archive(detail) => format!("{}: {detail}", strings.update_failed_archive),
+        update::Error::Install(detail) => format!("{}: {detail}", strings.update_failed_install),
+    }
+}
+
+/// The updater's status line: what it is doing, in one sentence.
+fn update_status(app: &App, strings: &Strings) -> String {
+    match &app.update {
+        Update::Idle => strings.update_idle.to_string(),
+        Update::Checking => strings.update_checking.to_string(),
+        Update::UpToDate => format!("{} — {}", strings.update_current, update::CURRENT),
+        Update::Available(version) => format!("{} {version}", strings.update_available),
+        // The percentage belongs to the button; the line keeps the fact.
+        Update::Downloading(_) => match &app.update_release {
+            Some(release) => format!("{} {}", strings.update_available, release.version),
+            None => strings.update_checking.to_string(),
+        },
+        Update::Ready { version, .. } => format!("{} — {version}", strings.update_verified),
+        Update::Failed(why) => format!("{}: {why}", strings.update_failed),
+    }
+}
+
+/// The updater's button: check, download, restart.
+fn update_action(app: &App, strings: &Strings) -> String {
+    match &app.update {
+        Update::Checking => strings.update_checking.to_string(),
+        Update::Downloading(fraction) => {
+            format!("{} {}%", strings.update_downloading, (fraction * 100.0).round() as i32)
+        }
+        Update::Ready { .. } => strings.update_restart.to_string(),
+        Update::Available(version) => format!("{} {version}", strings.update_download),
+        Update::Failed(_) => match &app.update_release {
+            Some(release) => format!("{} {}", strings.update_download, release.version),
+            None => strings.update_check.to_string(),
+        },
+        Update::Idle | Update::UpToDate => strings.update_check.to_string(),
+    }
+}
+
+/// Whether the updater is busy: the button is a progress line then.
+fn update_busy(app: &App) -> bool {
+    matches!(app.update, Update::Checking | Update::Downloading(_))
+}
+
+/// The dot on the settings button: a release newer than this binary is
+/// remembered, so the dot survives a restart and goes away once the new
+/// version is the one running.
+fn update_dot(app: &App) -> bool {
+    update::is_newer(&app.config.last_version, update::CURRENT)
+}
+
+/// The line under the status: what the updater promises, or why it will not
+/// replace this binary itself.
+fn update_hint(app: &App, strings: &Strings) -> String {
+    if app.update_managed {
+        strings.update_managed.to_string()
+    } else {
+        strings.update_signature_hint.to_string()
+    }
 }
 
 /// The row a run index stands for.
@@ -1547,6 +1814,49 @@ fn wire(ui: &AppWindow, app: &Rc<RefCell<App>>) {
             let mut state = app.borrow_mut();
             state.settings_open = false;
             refresh(&window, &state);
+        }
+    });
+
+    // The updater's one button: check, download, restart, in that order.
+    ui.on_update_pressed({
+        let ui = ui.as_weak();
+        let app = app.clone();
+        move || {
+            let Some(window) = ui.upgrade() else { return };
+            let mut state = app.borrow_mut();
+            match state.update.clone() {
+                Update::Checking | Update::Downloading(_) => {}
+                Update::Ready { exe, .. } => {
+                    // The new binary is in place: the config goes to disk
+                    // first, because the process is about to be replaced.
+                    state.persist();
+                    drop(state);
+                    match update::restart(&exe) {
+                        // On Windows the new process is already running.
+                        Ok(()) => std::process::exit(0),
+                        Err(err) => {
+                            let mut state = app.borrow_mut();
+                            state.update = Update::Failed(err.to_string());
+                            refresh(&window, &state);
+                        }
+                    }
+                }
+                Update::Available(_) | Update::Failed(_) if state.update_release.is_some() => {
+                    let Some(release) = state.update_release.clone() else {
+                        return;
+                    };
+                    state.update = Update::Downloading(0.0);
+                    state.update_manual = true;
+                    refresh(&window, &state);
+                    spawn_install(release, state.events.clone());
+                }
+                _ => {
+                    state.update = Update::Checking;
+                    state.update_manual = true;
+                    refresh(&window, &state);
+                    spawn_check(state.events.clone());
+                }
+            }
         }
     });
 
